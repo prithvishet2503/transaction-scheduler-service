@@ -32,7 +32,10 @@ export function bitgoApiBaseUrl(): string {
 export async function getFeeAddressBalance(enterpriseId: string, coin: string): Promise<FeeAddressBalance> {
   const url = `${bitgoApiBaseUrl()}/api/v2/${coin}/enterprise/${enterpriseId}/feeAddressBalance`;
   const res = await fetch(url, {
-    headers: { accept: 'application/json', authorization: `Bearer ${env.bitgoAccessToken}` },
+    headers: {
+    accept: 'application/json',
+    authorization: `Bearer ${env.bitgoTestAccessToken}`,
+  },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');

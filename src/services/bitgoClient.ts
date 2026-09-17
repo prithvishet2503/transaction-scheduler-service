@@ -40,7 +40,7 @@ export class BitGoClient {
     if (!this.bitgo) {
       this.bitgo = new BitGoAPI({
         env: env.bitgoEnv,
-        accessToken: env.bitgoAccessToken,
+        accessToken: env.bitgoTestAccessToken,
       });
       this.registerCoins();
     }

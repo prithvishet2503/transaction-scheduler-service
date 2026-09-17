@@ -19,6 +19,10 @@ export const env = {
   // --- BitGo (hardcoded for hackathon demo; NOT KMS-backed) ---
   bitgoEnv: (process.env.BITGO_ENV ?? 'test') as 'test' | 'prod',
   bitgoAccessToken: process.env.BITGO_ACCESS_TOKEN ?? '<set-your-testnet-access-token>',
+  // Test-env BitGo token for the fee-address enterprise endpoints
+  // (app.bitgo-test.com); falls back to the main token when unset.
+  bitgoTestAccessToken:
+    process.env.BITGO_TEST_ACCESS_TOKEN ?? process.env.BITGO_ACCESS_TOKEN ?? '',
   // REST base for the TxRequests API (staging by default for this demo).
   bitgoBaseUrl: process.env.BITGO_BASE_URL ?? 'https://app.bitgo-staging.com',
   // Wallet passphrase used to decrypt the user key share for signing.
