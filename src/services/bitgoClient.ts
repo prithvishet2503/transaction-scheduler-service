@@ -200,6 +200,47 @@ export class BitGoClient {
     };
   }
 
+  /**
+   * Direct SDK send used by the fee-address auto-funder. `sequenceId` makes
+   * retries idempotent (FR-6). Scheduled transactions use txrequests instead.
+   */
+  async getWallet(coinName: string, walletId: string) {
+    const coin = this.coin(coinName);
+    return coin.wallets().get({ id: walletId });
+  }
+
+  async sendMany(params: {
+    coin: string;
+    walletId: string;
+    address: string;
+    amount: string;
+    minConfirms?: number;
+    sequenceId: string;
+    comment?: string;
+  }) {
+    const wallet = await this.getWallet(params.coin, params.walletId);
+    const options: {
+      type: string;
+      recipients: { address: string; amount: string }[];
+      walletPassphrase?: string;
+      minConfirms: number;
+      sequenceId: string;
+      comment?: string;
+    } = {
+      // 'transfer' is the EVM payment intent type; without it the SDK throws
+      // "transaction type not supported: undefined" for custody/TSS wallets.
+      type: 'transfer',
+      recipients: [{ address: params.address, amount: params.amount }],
+      minConfirms: params.minConfirms ?? 0,
+      sequenceId: params.sequenceId,
+      comment: params.comment,
+    };
+    if (env.bitgoWalletPassphrase && !env.bitgoWalletPassphrase.startsWith('<set-')) {
+      options.walletPassphrase = env.bitgoWalletPassphrase;
+    }
+    return wallet.sendMany(options);
+  }
+
   /** Create a txrequest for one intent (payment / transferToken). */
   async createTxRequest(
     walletId: string,
