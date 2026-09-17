@@ -79,6 +79,11 @@ export const env = {
 
   // --- Webhook (BitGo transfer-confirmed → execution 'confirmed') ---
   webhookSecret: process.env.WEBHOOK_SECRET ?? 'dev-webhook-secret',
+  // --- Staking (scheduled-staking feature) ---
+  stakingPollIntervalMs: int(process.env.STAKING_POLL_INTERVAL_MS, 24 * 60 * 60 * 1000),
+  solValidatorAddress: process.env.SOL_VALIDATOR_ADDRESS ?? '',
+  stakingMinimumStakeAmount: process.env.STAKING_MINIMUM_STAKE_AMOUNT ?? '0.01',
+  stakingBatchSize: int(process.env.STAKING_BATCH_SIZE, 50),
 } as const;
 
 export type Env = typeof env;

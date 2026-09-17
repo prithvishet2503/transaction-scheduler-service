@@ -14,6 +14,15 @@ import {
 import { webhookHandler } from '../controllers/webhookController';
 import { workerTickHandler } from '../controllers/workerController';
 import { listAlertsHandler } from '../controllers/alertsController';
+import {
+  cancelStakingEntryHandler,
+  createStakingEntryHandler,
+  getStakingEntryHandler,
+  listStakingEntriesHandler,
+  pauseStakingEntryHandler,
+  resumeStakingEntryHandler,
+  updateStakingEntryHandler,
+} from '../controllers/scheduledStakingController';
 
 export const apiRouter = Router();
 
@@ -33,3 +42,11 @@ apiRouter.post('/smart-transactions/:id/pause', asyncHandler(pauseSmartTransacti
 apiRouter.post('/smart-transactions/:id/resume', asyncHandler(resumeSmartTransactionHandler));
 apiRouter.delete('/smart-transactions/:id', asyncHandler(cancelSmartTransactionHandler));
 apiRouter.get('/smart-transactions/:id/executions', asyncHandler(listSmartTransactionExecutionsHandler));
+// Scheduled staking CRUD
+apiRouter.post('/scheduled-staking', asyncHandler(createStakingEntryHandler));
+apiRouter.get('/scheduled-staking', asyncHandler(listStakingEntriesHandler));
+apiRouter.get('/scheduled-staking/:id', asyncHandler(getStakingEntryHandler));
+apiRouter.patch('/scheduled-staking/:id', asyncHandler(updateStakingEntryHandler));
+apiRouter.post('/scheduled-staking/:id/pause', asyncHandler(pauseStakingEntryHandler));
+apiRouter.post('/scheduled-staking/:id/resume', asyncHandler(resumeStakingEntryHandler));
+apiRouter.delete('/scheduled-staking/:id', asyncHandler(cancelStakingEntryHandler));
