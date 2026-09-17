@@ -157,6 +157,15 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
     throw new ScheduleError(`invalid IANA timezone: ${input.timezone}`, 400);
   }
   const condition = normalizeCondition(input.condition);
+  // A balance trigger is the event itself — the schedule runs once when the
+  // condition is met; recurrence would re-fire on every occurrence while the
+  // condition still holds.
+  if (condition.conditionType === 'balance' && input.frequency !== 'one_time') {
+    throw new ScheduleError(
+      'balance-triggered schedules run once — frequency must be one_time',
+      400,
+    );
+  }
   await validateRecipientAddresses(input.coin, recipients);
 
   const startAt = input.startAt ? new Date(input.startAt) : undefined;
