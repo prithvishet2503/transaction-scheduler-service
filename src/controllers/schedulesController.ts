@@ -17,6 +17,19 @@ function parseFrequency(v: unknown): Frequency | undefined {
     : undefined;
 }
 
+function parseRecipientsBody(raw: unknown) {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw.map((item) => {
+    const row = (item ?? {}) as { address?: unknown; amount?: unknown };
+    return {
+      address: row.address !== undefined ? String(row.address) : '',
+      amount: row.amount !== undefined ? String(row.amount) : '',
+    };
+  });
+}
+
 export async function createScheduleHandler(req: Request, res: Response) {
   const body = req.body ?? {};
   const schedule = await createSchedule({
@@ -25,7 +38,8 @@ export async function createScheduleHandler(req: Request, res: Response) {
     walletId: body.walletId,
     coin: body.coin,
     destinationAddress: body.destinationAddress,
-    amount: String(body.amount),
+    amount: body.amount !== undefined && body.amount !== null ? String(body.amount) : undefined,
+    recipients: parseRecipientsBody(body.recipients),
     frequency: parseFrequency(body.frequency) ?? 'one_time',
     startAt: body.startAt,
     endAt: body.endAt,
@@ -55,6 +69,7 @@ export async function updateScheduleHandler(req: Request, res: Response) {
   const schedule = await updateSchedule(req.userId!, req.params.id, {
     destinationAddress: body.destinationAddress,
     amount: body.amount !== undefined ? String(body.amount) : undefined,
+    recipients: parseRecipientsBody(body.recipients),
     frequency: parseFrequency(body.frequency),
     endAt: body.endAt,
     note: body.note,

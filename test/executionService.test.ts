@@ -101,11 +101,32 @@ describe('processDueSchedule', () => {
 
     expect(mSendMany).toHaveBeenCalledTimes(1);
     const sendArgs = mSendMany.mock.calls[0][0];
-    expect(sendArgs.amount).toBe('100000');
+    expect(sendArgs.recipients).toEqual([
+      { address: '0xde709f2102306220921060314715629080e2fb77', amount: '100000' },
+    ]);
     const updateCall = mUpdateOne.mock.calls[0];
     expect(updateCall[1].$set.status).toBe('executed');
     expect(updateCall[1].$set.txid).toBe('0x1234');
     // Non-default resets the default counter.
     expect(schedule.consecutiveDefaultedCount).toBe(0);
+  });
+
+  it('sends all payees in one sendMany when recipients is set', async () => {
+    const schedule = fakeSchedule();
+    schedule.recipients = [
+      { address: '0xde709f2102306220921060314715629080e2fb77', amount: '100000' },
+      { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '50000' },
+    ];
+    schedule.amount = '150000';
+    mFindOneAndUpdate
+      .mockResolvedValueOnce(executionDoc('exec_3', 'scheduled'))
+      .mockResolvedValueOnce(executionDoc('exec_3', 'claimed'));
+    mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
+    mSendMany.mockResolvedValue({ txid: '0xabcd' });
+
+    await processDueSchedule(schedule as never, 'worker-1');
+
+    expect(mSendMany.mock.calls[0][0].recipients).toEqual(schedule.recipients);
+    expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('executed');
   });
 });

@@ -21,14 +21,24 @@ export type NotificationType =
   | 'defaulted'
   | 'execution_failed';
 
+/** One payee in a scheduled send. Amounts are base-unit strings. */
+export interface Recipient {
+  address: string;
+  amount: string;
+}
+
 /** Amounts are stored as strings in base units to avoid JS precision loss. */
 export interface ScheduleInput {
   userId: string;
   enterpriseId?: string;
   walletId: string;
   coin: string;
-  destinationAddress: string;
-  amount: string;
+  /** Single-payee shortcut; ignored when `recipients` is provided. */
+  destinationAddress?: string;
+  /** Single-payee shortcut; ignored when `recipients` is provided. */
+  amount?: string;
+  /** One or more payees. One BitGo `sendMany` per occurrence. */
+  recipients?: Recipient[];
   frequency: Frequency;
   startAt?: string; // ISO
   endAt?: string; // ISO
@@ -45,6 +55,7 @@ export interface ScheduleRecord {
   coin: string;
   destinationAddress: string;
   amount: string;
+  recipients: Recipient[];
   frequency: Frequency;
   startAt?: Date;
   endAt?: Date;

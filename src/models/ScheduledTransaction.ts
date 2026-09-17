@@ -1,5 +1,5 @@
 import { Schema, model, Types } from 'mongoose';
-import type { Frequency, ScheduleStatus } from '../types';
+import type { Frequency, Recipient, ScheduleStatus } from '../types';
 
 export interface ScheduledTransactionDoc {
   _id: Types.ObjectId;
@@ -8,7 +8,8 @@ export interface ScheduledTransactionDoc {
   walletId: string;
   coin: string;
   destinationAddress: string;
-  amount: string; // base units, string to avoid precision loss
+  amount: string; // total of recipients, base units as string
+  recipients?: Recipient[];
   frequency: Frequency;
   startAt?: Date;
   endAt?: Date;
@@ -32,6 +33,16 @@ const scheduledTransactionSchema = new Schema<ScheduledTransactionDoc>(
     coin: { type: String, required: true },
     destinationAddress: { type: String, required: true },
     amount: { type: String, required: true },
+    recipients: {
+      type: [
+        {
+          address: { type: String, required: true },
+          amount: { type: String, required: true },
+          _id: false,
+        },
+      ],
+      default: undefined,
+    },
     frequency: {
       type: String,
       required: true,

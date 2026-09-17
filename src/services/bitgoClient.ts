@@ -146,8 +146,9 @@ export class BitGoClient {
   }
 
   /**
-   * Create + submit a single-recipient transaction through the normal BitGo
-   * pipeline. `sequenceId` makes retries idempotent (FR-6).
+   * Create + submit a transaction through the normal BitGo pipeline.
+   * `recipients` may be one or many payees; `sequenceId` makes retries
+   * idempotent (FR-6).
    *
    * For **custody wallets** BitGo holds the keys, so no user key share needs
    * decrypting — `walletPassphrase` is only included when one is actually
@@ -156,8 +157,7 @@ export class BitGoClient {
   async sendMany(params: {
     coin: string;
     walletId: string;
-    address: string;
-    amount: string;
+    recipients: { address: string; amount: string }[];
     minConfirms?: number;
     sequenceId: string;
     comment?: string;
@@ -174,7 +174,7 @@ export class BitGoClient {
       // 'transfer' is the EVM payment intent type; without it the SDK throws
       // "transaction type not supported: undefined" for custody/TSS wallets.
       type: 'transfer',
-      recipients: [{ address: params.address, amount: params.amount }],
+      recipients: params.recipients,
       minConfirms: params.minConfirms ?? 0,
       sequenceId: params.sequenceId,
       comment: params.comment,

@@ -102,6 +102,54 @@ describe('createSchedule', () => {
       }),
     ).rejects.toMatchObject({ status: 400 });
   });
+
+  it('accepts multiple recipients and stores the total amount', async () => {
+    mIsValidAddress.mockResolvedValue(true);
+    mCreate.mockImplementation(async (doc: Record<string, unknown>) => ({
+      _id: { toString: () => 'sched_multi' },
+      ...doc,
+      lastRunAt: null,
+      consecutiveDefaultedCount: 0,
+      lastReminderSentForRunAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
+
+    const schedule = await createSchedule({
+      userId: 'u1',
+      walletId: 'w1',
+      coin: 'tbaseeth',
+      recipients: [
+        { address: '0xde709f2102306220921060314715629080e2fb77', amount: '1000' },
+        { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '2000' },
+      ],
+      frequency: 'weekly',
+      timezone: 'UTC',
+    });
+
+    expect(schedule.recipients).toHaveLength(2);
+    expect(schedule.amount).toBe('3000');
+    expect(schedule.destinationAddress).toBe('0xde709f2102306220921060314715629080e2fb77');
+    expect(mCreate.mock.calls[0][0].recipients).toHaveLength(2);
+    expect(mIsValidAddress).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects duplicate recipient addresses', async () => {
+    await expect(
+      createSchedule({
+        userId: 'u1',
+        walletId: 'w1',
+        coin: 'tbaseeth',
+        recipients: [
+          { address: '0xde709f2102306220921060314715629080e2fb77', amount: '1000' },
+          { address: '0xDE709F2102306220921060314715629080E2FB77', amount: '2000' },
+        ],
+        frequency: 'daily',
+        timezone: 'UTC',
+      }),
+    ).rejects.toMatchObject({ status: 400, message: 'duplicate recipient address' });
+    expect(mCreate).not.toHaveBeenCalled();
+  });
 });
 
 function bitgoBalanceCheckSpy(): number {

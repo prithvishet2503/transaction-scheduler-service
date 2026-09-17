@@ -3,6 +3,7 @@ import { ScheduledTransaction } from '../models/ScheduledTransaction';
 import { bitgoClient } from './bitgoClient';
 import { notify } from './notificationService';
 import { computeNextRun } from '../utils/frequency';
+import { recipientsFromSchedule, sumAmounts } from '../utils/recipients';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import type { NotificationType } from '../types';
@@ -82,6 +83,7 @@ async function emit(
     coin: schedule.coin,
     destinationAddress: schedule.destinationAddress,
     amount: schedule.amount,
+    recipients: recipientsFromSchedule(schedule),
     scheduledFor: schedule.nextRunAt?.toISOString(),
     consecutiveDefaultedCount: schedule.consecutiveDefaultedCount,
     idempotencyKey: `${schedule._id.toString()}:${extra.executionId ?? 'none'}:${type}`,
@@ -104,16 +106,17 @@ function isObjectWithId(value: unknown): value is { id: unknown } {
  *  - server-side `insufficient_funds` → also default
  */
 async function executeOccurrence(schedule: InstanceType<typeof ScheduledTransaction>, executionId: string) {
-  const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, schedule.destinationAddress);
-  if (BigInt(snapshot.spendable) < BigInt(schedule.amount)) {
+  const recipients = recipientsFromSchedule(schedule);
+  const totalAmount = sumAmounts(recipients);
+  const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipients[0].address);
+  if (BigInt(snapshot.spendable) < BigInt(totalAmount)) {
     return { outcome: 'defaulted' as const, snapshot };
   }
   try {
     const result = await bitgoClient.sendMany({
       coin: schedule.coin,
       walletId: schedule.walletId,
-      address: schedule.destinationAddress,
-      amount: schedule.amount,
+      recipients,
       sequenceId: `${schedule._id.toString()}:${schedule.nextRunAt?.getTime() ?? Date.now()}`,
       comment: `scheduled:${schedule._id.toString()}`,
     });
