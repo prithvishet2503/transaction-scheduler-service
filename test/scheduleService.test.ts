@@ -57,6 +57,7 @@ describe('createSchedule', () => {
       amount: '100000',
       frequency: 'weekly',
       timezone: 'UTC',
+      condition: { type: 'timestamp', at: '2026-09-20T00:00:00Z' },
     });
 
     expect(schedule.status).toBe('active');
@@ -130,7 +131,7 @@ describe('createSchedule', () => {
         { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '2000' },
       ],
       frequency: 'weekly',
-      timezone: 'UTC',
+      condition: { type: 'timestamp', at: '2026-09-20T00:00:00Z' },
     });
 
     expect(schedule.recipients).toHaveLength(2);
