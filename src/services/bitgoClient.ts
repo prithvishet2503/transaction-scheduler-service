@@ -164,12 +164,16 @@ export class BitGoClient {
   }) {
     const wallet = await this.getWallet(params.coin, params.walletId);
     const options: {
+      type: string;
       recipients: { address: string; amount: string }[];
       walletPassphrase?: string;
       minConfirms: number;
       sequenceId: string;
       comment?: string;
     } = {
+      // 'transfer' is the EVM payment intent type; without it the SDK throws
+      // "transaction type not supported: undefined" for custody/TSS wallets.
+      type: 'transfer',
       recipients: [{ address: params.address, amount: params.amount }],
       minConfirms: params.minConfirms ?? 0,
       sequenceId: params.sequenceId,

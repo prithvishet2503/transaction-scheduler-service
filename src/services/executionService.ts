@@ -94,6 +94,10 @@ function retryBackoff(attempt: number): number {
   return env.retryBackoffMs[idx] ?? 60_000;
 }
 
+function isObjectWithId(value: unknown): value is { id: unknown } {
+  return !!value && typeof value === 'object' && 'id' in value;
+}
+
 /**
  * Balance pre-check + send (FR-10/FR-11). Two-layer rule:
  *  - spendableBalanceString < amount  → default (no transaction started)
@@ -209,7 +213,14 @@ export async function processDueSchedule(
 
   // outcome === 'sent'
   const result = run.result as Record<string, unknown>;
-  const pendingApprovalId = result?.pendingApprovalId as string | undefined;
+  // Custody sends return { pendingApproval: { id, ... }, ... }; hot sends
+  // return { txid, pendingApprovalId? }. Normalize both.
+  let pendingApprovalId =
+    typeof result?.pendingApprovalId === 'string' ? result.pendingApprovalId : undefined;
+  const pa = result?.pendingApproval;
+  if (!pendingApprovalId && isObjectWithId(pa) && typeof pa.id === 'string') {
+    pendingApprovalId = pa.id;
+  }
   const txid = result?.txid as string | undefined;
 
   if (pendingApprovalId) {
