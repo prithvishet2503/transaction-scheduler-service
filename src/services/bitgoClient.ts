@@ -150,6 +150,10 @@ export class BitGoClient {
    * pass if the coin module isn't available (demo/testnet flexibility).
    */
   async isValidAddress(coinName: string, address: string): Promise<boolean> {
+    if (env.bitgoMode === 'demo') {
+      logger.warn({ coinName, address }, 'demo mode: skipping coin address validation');
+      return /^[A-Za-z0-9]{8,}$/.test(address);
+    }
     try {
       const coin = this.coin(coinName);
       if (typeof coin.isValidAddress === 'function') {
@@ -160,7 +164,22 @@ export class BitGoClient {
     }
     return /^[A-Za-z0-9]{8,}$/.test(address);
   }
-  async checkBalance(coinName: string, walletId: string, recipientAddress: string): Promise<BalanceSnapshot> {
+  /**
+   * Balance pre-check (FR-10). Returns spendable + fee-adjusted maximum.
+   * `maximumSpendable` may be unavailable for some coins → null.
+   */
+  async checkBalance(
+    coinName: string,
+    walletId: string,
+    recipientAddress: string,
+  ): Promise<BalanceSnapshot> {
+    if (env.bitgoMode === 'demo') {
+      logger.warn(
+        { coinName, walletId, spendable: env.demoSpendable },
+        'demo mode: returning configured spendable balance',
+      );
+      return { spendable: env.demoSpendable, maximumSpendable: null };
+    }
     const wallet = await this.api<{ spendableBalanceString?: string }>(
       'GET',
       `/api/v2/${coinName}/wallet/${walletId}`,
@@ -186,6 +205,11 @@ export class BitGoClient {
     walletId: string,
     intent: Record<string, unknown>,
   ): Promise<{ txRequestId: string; state: string }> {
+    if (env.bitgoMode === 'demo') {
+      const txRequestId = env.demoPendingApprovalId || `demo-${Date.now().toString(16)}`;
+      logger.warn({ walletId, txRequestId }, 'demo mode: simulating txrequest creation');
+      return { txRequestId, state: env.demoPendingApprovalId ? 'pendingApproval' : 'approved' };
+    }
     const res = await this.api<{ txRequestId: string; state: string }>(
       'POST',
       `/api/v2/wallet/${walletId}/txrequests`,
@@ -196,6 +220,19 @@ export class BitGoClient {
 
   /** Latest version of a txrequest, reduced to the fields the poller needs. */
   async fetchLatestTxRequest(walletId: string, txRequestId: string): Promise<TxRequestView | null> {
+    if (env.bitgoMode === 'demo') {
+      if (!txRequestId.startsWith('demo-') && txRequestId !== env.demoPendingApprovalId) {
+        return null;
+      }
+      // Simulated hot-wallet flow: broadcast immediately unless a pending
+      // approval id is configured (execution then holds pending_approval).
+      return {
+        txRequestId,
+        state: env.demoPendingApprovalId ? 'pendingApproval' : 'approved',
+        isCanceled: false,
+        txHashes: env.demoPendingApprovalId ? [] : [txRequestId],
+      };
+    }
     const res = await this.api<{
       txRequests?: Array<{
         txRequestId: string;

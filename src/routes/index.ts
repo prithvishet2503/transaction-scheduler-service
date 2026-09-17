@@ -13,6 +13,7 @@ import {
 } from '../controllers/schedulesController';
 import { webhookHandler } from '../controllers/webhookController';
 import { workerTickHandler } from '../controllers/workerController';
+import { listAlertsHandler } from '../controllers/alertsController';
 
 export const apiRouter = Router();
 
@@ -22,6 +23,7 @@ apiRouter.post('/webhooks/bitgo', asyncHandler(webhookHandler));
 
 // Authenticated schedule API (demo: static API key)
 apiRouter.use(requireApiKey);
+apiRouter.get('/me/alerts', asyncHandler(listAlertsHandler));
 apiRouter.post('/worker/tick', asyncHandler(workerTickHandler));
 apiRouter.post('/schedules', asyncHandler(createScheduleHandler));
 apiRouter.get('/schedules', asyncHandler(listSchedulesHandler));

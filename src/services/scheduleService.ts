@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import { ScheduledTransaction } from '../models/ScheduledTransaction';
+import { ScheduleExecution } from '../models/ScheduleExecution';
 import { bitgoClient } from './bitgoClient';
 import { computeNextRun, initialNextRunAt, isValidTimezone } from '../utils/frequency';
 import {
@@ -28,7 +29,7 @@ export class ScheduleError extends Error {
   }
 }
 
-function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecord {
+export function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecord {
   const recipients = recipientsFromSchedule(doc);
   return {
     id: doc._id.toString(),
@@ -212,7 +213,33 @@ export async function listSchedules(
   const hasMore = docs.length > limit;
   const page = hasMore ? docs.slice(0, limit) : docs;
   const nextCursor = hasMore ? page[page.length - 1]?._id.toString() : undefined;
-  return { items: page.map(toRecord), nextCursor };
+
+  // Embed each schedule's latest execution (one extra query per page) so the
+  // FE table can show the last outcome (status/reason/error) without
+  // per-schedule execution fetches.
+  const scheduleIds = page.map((d) => d._id);
+  const executions = await ScheduleExecution.find({ scheduleId: { $in: scheduleIds } })
+    .sort({ scheduledFor: -1 })
+    .limit(scheduleIds.length * 5)
+    .lean();
+  const latestBySchedule = new Map<string, ScheduleRecord['lastExecution']>();
+  for (const e of executions) {
+    const key = e.scheduleId.toString();
+    if (!latestBySchedule.has(key)) {
+      latestBySchedule.set(key, {
+        status: e.status,
+        reason: e.reason,
+        error: e.error,
+        txid: e.txid,
+        scheduledFor: e.scheduledFor,
+      });
+    }
+  }
+
+  return {
+    items: page.map((d) => ({ ...toRecord(d), lastExecution: latestBySchedule.get(d._id.toString()) })),
+    nextCursor,
+  };
 }
 
 export async function getSchedule(userId: string, id: string): Promise<ScheduleRecord> {

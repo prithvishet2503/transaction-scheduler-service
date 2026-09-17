@@ -87,6 +87,14 @@ export interface ScheduleRecord {
   tokenName?: string;
   consecutiveDefaultedCount: number;
   lastReminderSentForRunAt?: Date | null;
+  /** Latest execution summary embedded by listSchedules (FE table column). */
+  lastExecution?: {
+    status: string;
+    reason?: string;
+    error?: string;
+    txid?: string;
+    scheduledFor: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
