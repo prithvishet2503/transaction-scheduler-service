@@ -115,12 +115,15 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
 
 export async function listSchedules(
   userId: string,
-  opts: { status?: string; limit?: number; cursor?: string } = {},
+  opts: { status?: string; walletId?: string; limit?: number; cursor?: string } = {},
 ): Promise<{ items: ScheduleRecord[]; nextCursor?: string }> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const query: Record<string, unknown> = { userId };
   if (opts.status) {
     query.status = opts.status;
+  }
+  if (opts.walletId) {
+    query.walletId = opts.walletId;
   }
   const cursorDoc = opts.cursor ? await ScheduledTransaction.findById(opts.cursor).lean() : null;
   if (cursorDoc) {

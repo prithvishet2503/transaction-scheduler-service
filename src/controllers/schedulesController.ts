@@ -53,6 +53,7 @@ export async function createScheduleHandler(req: Request, res: Response) {
 export async function listSchedulesHandler(req: Request, res: Response) {
   const { items, nextCursor } = await listSchedules(req.userId!, {
     status: req.query.status as string | undefined,
+    walletId: req.query.walletId as string | undefined,
     limit: req.query.limit ? Number(req.query.limit) : undefined,
     cursor: req.query.cursor as string | undefined,
   });
