@@ -181,6 +181,29 @@ describe('processDueSchedule', () => {
 
     expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
   });
+
+  it('sends all payees in one txrequest when recipients is set', async () => {
+    const schedule = fakeSchedule();
+    schedule.recipients = [
+      { address: '0xde709f2102306220921060314715629080e2fb77', amount: '100000' },
+      { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '50000' },
+    ];
+    schedule.amount = '150000';
+    mFindOneAndUpdate
+      .mockResolvedValueOnce(executionDoc('exec_6', 'scheduled'))
+      .mockResolvedValueOnce(executionDoc('exec_6', 'claimed'));
+    mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
+    mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_6', state: 'initialized' });
+    mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_6', state: 'delivered', isCanceled: false, txHashes: ['0xbeef'] });
+
+    await processDueSchedule(schedule as never, 'worker-1');
+
+    expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
+    const intent = mCreateTxRequest.mock.calls[0][1] as { recipients: Array<{ amount: { value: string } }> };
+    expect(intent.recipients).toHaveLength(2);
+    expect(intent.recipients.map((r) => r.amount.value)).toEqual(['100000', '50000']);
+    expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('executed');
+  });
 });
 
 describe('pollPendingTxRequests', () => {

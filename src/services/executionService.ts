@@ -3,6 +3,7 @@ import { ScheduledTransaction } from '../models/ScheduledTransaction';
 import { bitgoClient } from './bitgoClient';
 import { notify } from './notificationService';
 import { computeNextRun } from '../utils/frequency';
+import { recipientsFromSchedule, sumAmounts } from '../utils/recipients';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import type { BalanceSnapshot, TxRequestView } from './bitgoClient';
@@ -83,6 +84,7 @@ async function emit(
     coin: schedule.coin,
     destinationAddress: schedule.destinationAddress,
     amount: schedule.amount,
+    recipients: recipientsFromSchedule(schedule),
     scheduledFor: schedule.nextRunAt?.toISOString(),
     consecutiveDefaultedCount: schedule.consecutiveDefaultedCount,
     idempotencyKey: `${schedule._id.toString()}:${extra.executionId ?? 'none'}:${type}`,
@@ -129,32 +131,37 @@ async function executeOccurrence(
   schedule: InstanceType<typeof ScheduledTransaction>,
   executionId: string,
 ): Promise<OccurrenceOutcome> {
-  const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, schedule.destinationAddress);
+  const recipients = recipientsFromSchedule(schedule);
+  const totalAmount = sumAmounts(recipients);
+  const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipients[0].address);
   const spendable = BigInt(snapshot.spendable);
   if (schedule.conditionType === 'balance' && schedule.conditionOperator && schedule.conditionLimit) {
     if (!balanceConditionMet(schedule.conditionOperator, spendable, BigInt(schedule.conditionLimit))) {
       return { outcome: 'defaulted', reason: 'BALANCE_CONDITION_NOT_MET', snapshot };
     }
   }
-  if (spendable < BigInt(schedule.amount)) {
+  if (spendable < BigInt(totalAmount)) {
     return { outcome: 'defaulted', reason: 'INSUFFICIENT_BALANCE', snapshot };
   }
-  const recipient: Record<string, unknown> = {
-    address: { address: schedule.destinationAddress },
-    amount: { value: schedule.amount, symbol: schedule.tokenName ?? schedule.coin },
-  };
-  if (schedule.tokenName) {
-    // Token schedules are EVM ERC-20-like in this service; Wallet Platform
-    // rejects a transferToken recipient without tokenData.
-    recipient.tokenData = {
-      tokenName: schedule.tokenName,
-      tokenType: 'ERC20',
-      tokenQuantity: schedule.amount,
+  const intentRecipients = recipients.map((r) => {
+    const entry: Record<string, unknown> = {
+      address: { address: r.address },
+      amount: { value: r.amount, symbol: schedule.tokenName ?? schedule.coin },
     };
-  }
+    if (schedule.tokenName) {
+      // Token schedules are EVM ERC-20-like in this service; Wallet Platform
+      // rejects a transferToken recipient without tokenData.
+      entry.tokenData = {
+        tokenName: schedule.tokenName,
+        tokenType: 'ERC20',
+        tokenQuantity: r.amount,
+      };
+    }
+    return entry;
+  });
   const intent: Record<string, unknown> = {
     intentType: schedule.tokenName ? 'transferToken' : 'payment',
-    recipients: [recipient],
+    recipients: intentRecipients,
     sequenceId: `${schedule._id.toString()}:${schedule.nextRunAt?.getTime() ?? Date.now()}`,
     comment: `scheduled:${schedule._id.toString()}`,
   };

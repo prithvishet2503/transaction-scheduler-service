@@ -11,6 +11,7 @@ export interface NotificationPayload {
   coin: string;
   destinationAddress?: string;
   amount?: string;
+  recipients?: { address: string; amount: string }[];
   scheduledFor?: string;
   nextRunAt?: string;
   reason?: string;

@@ -2,9 +2,16 @@ import { Types } from 'mongoose';
 import { ScheduledTransaction } from '../models/ScheduledTransaction';
 import { bitgoClient } from './bitgoClient';
 import { computeNextRun, initialNextRunAt, isValidTimezone } from '../utils/frequency';
+import {
+  RecipientError,
+  normalizeRecipients,
+  recipientsFromSchedule,
+  sumAmounts,
+} from '../utils/recipients';
 import { env } from '../config/env';
 import type {
   BalanceConditionOperator,
+  Recipient,
   ScheduleCondition,
   ScheduleConditionInput,
   ScheduleInput,
@@ -22,17 +29,20 @@ export class ScheduleError extends Error {
 }
 
 function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecord {
+  const recipients = recipientsFromSchedule(doc);
   return {
     id: doc._id.toString(),
     userId: doc.userId,
     enterpriseId: doc.enterpriseId,
     walletId: doc.walletId,
     coin: doc.coin,
-    destinationAddress: doc.destinationAddress,
-    amount: doc.amount,
+    destinationAddress: recipients[0].address,
+    amount: sumAmounts(recipients),
+    recipients,
     tokenName: doc.tokenName,
     frequency: doc.frequency,
     condition: docCondition(doc),
+    startAt: doc.startAt,
     endAt: doc.endAt,
     timezone: doc.timezone,
     note: doc.note,
@@ -53,11 +63,11 @@ function reminderOffset(input: ScheduleInput): number {
 }
 
 /**
- * Validate + normalize the creation trigger condition. A request carries
- * exactly one variant — balance-relative or timestamp — never both; anything
- * else is a 400. Returns the flat doc fields to persist.
+ * Validate + normalize the trigger condition. A request carries exactly one
+ * variant — balance-relative or timestamp — never both; anything else is a
+ * 400. Returns the flat doc fields to persist.
  */
-function normalizeCondition(raw: ScheduleConditionInput | undefined): {
+function normalizeCondition(raw: ScheduleConditionInput | undefined | null): {
   conditionType?: 'balance' | 'timestamp';
   conditionOperator?: BalanceConditionOperator;
   conditionLimit?: string;
@@ -117,13 +127,27 @@ function docCondition(doc: InstanceType<typeof ScheduledTransaction>): ScheduleC
   }
 }
 
-export async function createSchedule(input: ScheduleInput): Promise<ScheduleRecord> {
-  if (!input.walletId || !input.destinationAddress || !input.coin) {
-    throw new ScheduleError('walletId, coin and destinationAddress are required', 400);
+async function validateRecipientAddresses(coin: string, recipients: Recipient[]): Promise<void> {
+  for (const r of recipients) {
+    const ok = await bitgoClient.isValidAddress(coin, r.address);
+    if (!ok) {
+      throw new ScheduleError(`destination address is invalid for coin: ${r.address}`, 400);
+    }
   }
-  const amount = BigInt(input.amount);
-  if (amount <= 0n) {
-    throw new ScheduleError('amount must be a positive integer in base units', 400);
+}
+
+export async function createSchedule(input: ScheduleInput): Promise<ScheduleRecord> {
+  if (!input.walletId || !input.coin) {
+    throw new ScheduleError('walletId, coin and destinationAddress (or recipients) are required', 400);
+  }
+  let recipients: Recipient[];
+  try {
+    recipients = normalizeRecipients(input);
+  } catch (err) {
+    if (err instanceof RecipientError) {
+      throw new ScheduleError(err.message, err.status);
+    }
+    throw err;
   }
   if (!['one_time', 'daily', 'weekly', 'monthly'].includes(input.frequency)) {
     throw new ScheduleError('invalid frequency', 400);
@@ -132,10 +156,7 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
     throw new ScheduleError(`invalid IANA timezone: ${input.timezone}`, 400);
   }
   const condition = normalizeCondition(input.condition);
-  const addressOk = await bitgoClient.isValidAddress(input.coin, input.destinationAddress);
-  if (!addressOk) {
-    throw new ScheduleError('destination address is invalid for coin', 400);
-  }
+  await validateRecipientAddresses(input.coin, recipients);
 
   const startAt = input.startAt ? new Date(input.startAt) : undefined;
   const endAt = input.endAt ? new Date(input.endAt) : undefined;
@@ -144,10 +165,13 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
   // FR-4: schedule creation never checks balance — zero-balance wallets are accepted.
   const doc = await ScheduledTransaction.create({
     userId: input.userId,
+    enterpriseId: input.enterpriseId,
     walletId: input.walletId,
     coin: input.coin,
-    destinationAddress: input.destinationAddress,
-    amount: input.amount,
+    destinationAddress: recipients[0].address,
+    amount: sumAmounts(recipients),
+    recipients,
+    tokenName: input.tokenName || undefined,
     frequency: input.frequency,
     startAt,
     endAt,
@@ -159,7 +183,6 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
     lastRunAt: null,
     consecutiveDefaultedCount: 0,
     lastReminderSentForRunAt: null,
-    tokenName: input.tokenName || undefined,
     ...condition,
   });
 
@@ -169,12 +192,15 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
 
 export async function listSchedules(
   userId: string,
-  opts: { status?: string; limit?: number; cursor?: string } = {},
+  opts: { status?: string; walletId?: string; limit?: number; cursor?: string } = {},
 ): Promise<{ items: ScheduleRecord[]; nextCursor?: string }> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const query: Record<string, unknown> = { userId };
   if (opts.status) {
     query.status = opts.status;
+  }
+  if (opts.walletId) {
+    query.walletId = opts.walletId;
   }
   const cursorDoc = opts.cursor ? await ScheduledTransaction.findById(opts.cursor).lean() : null;
   if (cursorDoc) {
@@ -206,6 +232,7 @@ export async function updateSchedule(
   patch: {
     destinationAddress?: string;
     amount?: string;
+    recipients?: Recipient[];
     frequency?: ScheduleRecord['frequency'];
     endAt?: string | null;
     note?: string;
@@ -216,18 +243,46 @@ export async function updateSchedule(
   const schedule = await getSchedule(userId, id);
   const changes: Record<string, unknown> = {};
 
-  if (patch.destinationAddress !== undefined) {
-    const ok = await bitgoClient.isValidAddress(schedule.coin, patch.destinationAddress);
-    if (!ok) {
-      throw new ScheduleError('destination address is invalid for coin', 400);
+  if (patch.recipients !== undefined) {
+    let recipients: Recipient[];
+    try {
+      recipients = normalizeRecipients({ recipients: patch.recipients });
+    } catch (err) {
+      if (err instanceof RecipientError) {
+        throw new ScheduleError(err.message, err.status);
+      }
+      throw err;
     }
-    changes.destinationAddress = patch.destinationAddress;
-  }
-  if (patch.amount !== undefined) {
-    if (BigInt(patch.amount) <= 0n) {
-      throw new ScheduleError('amount must be a positive integer in base units', 400);
+    await validateRecipientAddresses(schedule.coin, recipients);
+    changes.recipients = recipients;
+    changes.destinationAddress = recipients[0].address;
+    changes.amount = sumAmounts(recipients);
+  } else {
+    if (
+      (patch.destinationAddress !== undefined || patch.amount !== undefined) &&
+      schedule.recipients.length > 1
+    ) {
+      throw new ScheduleError('use recipients to update a multi-payee schedule', 400);
     }
-    changes.amount = patch.amount;
+    if (patch.destinationAddress !== undefined) {
+      const ok = await bitgoClient.isValidAddress(schedule.coin, patch.destinationAddress);
+      if (!ok) {
+        throw new ScheduleError('destination address is invalid for coin', 400);
+      }
+      changes.destinationAddress = patch.destinationAddress;
+    }
+    if (patch.amount !== undefined) {
+      if (BigInt(patch.amount) <= 0n) {
+        throw new ScheduleError('amount must be a positive integer in base units', 400);
+      }
+      changes.amount = patch.amount;
+    }
+    if (patch.destinationAddress !== undefined || patch.amount !== undefined) {
+      const nextAddress =
+        (changes.destinationAddress as string | undefined) ?? schedule.destinationAddress;
+      const nextAmount = (changes.amount as string | undefined) ?? schedule.amount;
+      changes.recipients = [{ address: nextAddress, amount: nextAmount }];
+    }
   }
   if (patch.frequency !== undefined) {
     if (!['one_time', 'daily', 'weekly', 'monthly'].includes(patch.frequency)) {
@@ -244,7 +299,6 @@ export async function updateSchedule(
   if (patch.reminderOffsetMs !== undefined) {
     changes.reminderOffsetMs = Math.max(patch.reminderOffsetMs, env.minReminderOffsetMs);
   }
-
   if (patch.condition !== undefined) {
     if (patch.condition === null) {
       // Explicit clear: the schedule loses its trigger condition.
@@ -262,7 +316,10 @@ export async function updateSchedule(
   // Recompute next run if a scheduling-affecting field changed and it's active.
   if (
     schedule.status === 'active' &&
-    (changes.frequency !== undefined || changes.amount !== undefined || changes.destinationAddress !== undefined)
+    (changes.frequency !== undefined ||
+      changes.amount !== undefined ||
+      changes.destinationAddress !== undefined ||
+      changes.recipients !== undefined)
   ) {
     changes.nextRunAt = computeNextRun(effective.frequency, new Date(), effective.timezone);
   }
