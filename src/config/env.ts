@@ -25,6 +25,12 @@ export const env = {
   // NOT required for custody wallets (BitGo holds the keys) — only set it
   // for self-custody/hot wallets.
   bitgoWalletPassphrase: process.env.BITGO_WALLET_PASSPHRASE ?? '',
+  // Demo mode (hackathon): bypass the BitGo SDK entirely. Default 'real'.
+  bitgoMode: (process.env.BITGO_MODE ?? 'real') as 'real' | 'demo',
+  // Spendable balance (base units, string) reported by the demo precheck.
+  demoSpendable: process.env.DEMO_SPENDABLE ?? '0',
+  // When set, demo sendMany returns a pendingApproval result instead of a broadcast.
+  demoPendingApprovalId: process.env.DEMO_PENDING_APPROVAL_ID ?? '',
   // Comma-separated coin list the SDK should register (e.g. "tbaseeth,tbtc").
   coins: (process.env.COINS ?? 'tbaseeth').split(',').filter(Boolean),
 

@@ -37,14 +37,20 @@ export function computeNextRun(
   return next.toJSDate();
 }
 
-/** Initial nextRunAt from the schedule start (defaults to now). */
+/**
+ * Initial nextRunAt: the first occurrence runs AT the start instant
+ * (LLD §3.1 — a new schedule's nextRunAt equals its startDate). Subsequent
+ * occurrences advance via computeNextRun after each execution resolves;
+ * one_time completes there (computeNextRun → null → status 'completed').
+ */
 export function initialNextRunAt(
   frequency: Frequency,
   startAt: Date | undefined,
   timezone: string,
 ): Date | null {
-  const base = startAt ?? new Date();
-  return computeNextRun(frequency, base, timezone);
+  void frequency;
+  void timezone;
+  return startAt ?? new Date();
 }
 
 export function isValidTimezone(tz: string): boolean {

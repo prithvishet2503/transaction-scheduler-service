@@ -57,6 +57,7 @@ describe('createSchedule', () => {
       amount: '100000',
       frequency: 'weekly',
       timezone: 'UTC',
+      condition: { type: 'timestamp', at: '2026-09-20T00:00:00Z' },
     });
 
     expect(schedule.status).toBe('active');
@@ -130,7 +131,7 @@ describe('createSchedule', () => {
         { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '2000' },
       ],
       frequency: 'weekly',
-      timezone: 'UTC',
+      condition: { type: 'timestamp', at: '2026-09-20T00:00:00Z' },
     });
 
     expect(schedule.recipients).toHaveLength(2);
@@ -184,7 +185,11 @@ describe('createSchedule trigger condition', () => {
   });
 
   it('persists a balance condition (flat fields, no timestamp)', async () => {
-    await createSchedule({ ...validBase, condition: { type: 'balance', operator: 'above', limit: '500000' } });
+    await createSchedule({
+      ...validBase,
+      frequency: 'one_time' as const,
+      condition: { type: 'balance', operator: 'above', limit: '500000' },
+    });
     const arg = mCreate.mock.calls[0][0] as Record<string, unknown>;
     expect(arg.conditionType).toBe('balance');
     expect(arg.conditionOperator).toBe('above');
@@ -234,6 +239,28 @@ describe('createSchedule trigger condition', () => {
       await expect(createSchedule({ ...validBase, condition })).rejects.toMatchObject({ status: 400 });
     }
     expect(mCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a balance condition with a recurring frequency', async () => {
+    await expect(
+      createSchedule({
+        ...validBase,
+        condition: { type: 'balance', operator: 'above', limit: '500000' },
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: 'balance-triggered schedules run once — frequency must be one_time',
+    });
+    expect(mCreate).not.toHaveBeenCalled();
+  });
+
+  it('accepts a balance condition with one_time frequency', async () => {
+    await createSchedule({
+      ...validBase,
+      frequency: 'one_time' as const,
+      condition: { type: 'balance', operator: 'above', limit: '500000' },
+    });
+    expect(mCreate).toHaveBeenCalledTimes(1);
   });
 });
 
