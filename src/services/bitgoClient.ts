@@ -4,17 +4,32 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 
 /**
- * Thin wrapper over the BitGoJS SDK for the scheduler's server-side execution.
+ * BitGo access for the scheduler's server-side execution.
  *
- * Authentication uses a long-lived, spend-scoped access token. For the
- * hackathon demo the token + wallet passphrase are supplied via environment
- * variables (hardcoded in `.env`); a production deployment would source these
- * from a secret manager instead (see docs/EXTERNAL-INTEGRATIONS.md).
+ * Runtime paths — balance pre-check (FR-10), txrequest create + poll — go
+ * through the plain REST TxRequests API against `env.bitgoBaseUrl`
+ * (staging: https://app.bitgo-staging.com), authenticated with a long-lived
+ * spend-scoped access token from the environment. The BitGoJS SDK is only
+ * used for offline destination-address validation.
  *
- * NOTE: the SDK does NOT enforce sufficient funds client-side — the scheduler
- * performs an explicit balance pre-check before calling `sendMany` (FR-10),
+ * NOTE: BitGo does NOT enforce sufficient funds for us here — the scheduler
+ * performs an explicit balance pre-check before creating a txrequest (FR-10),
  * and treats a server-side `insufficient_funds` error as a default (FR-11).
  */
+
+/** Spendable + fee-adjusted maximum for a wallet (see `checkBalance`). */
+export interface BalanceSnapshot {
+  spendable: string;
+  maximumSpendable: string | null;
+}
+
+/** Reduced view of a txrequest's latest version (see `fetchLatestTxRequest`). */
+export interface TxRequestView {
+  txRequestId: string;
+  state: string;
+  isCanceled: boolean;
+  txHashes: string[];
+}
 
 export class BitGoClient {
   private bitgo: BitGoAPI | null = null;
@@ -76,6 +91,7 @@ export class BitGoClient {
         case 'baseeth':
         case 'teth':
         case 'eth':
+        case 'hteth':
         case 'topeth':
         case 'opeth':
         case 'tarbeth':
@@ -104,10 +120,30 @@ export class BitGoClient {
     return bitgo.coin(coinName) as unknown as BaseCoin;
   }
 
-  async getWallet(coinName: string, walletId: string) {
-    const coin = this.coin(coinName);
-    return coin.wallets().get({ id: walletId });
+  /**
+   * Thin REST layer for the TxRequests API. The runtime paths (balance
+   * pre-check, txrequest create + poll) go through plain REST against
+   * `env.bitgoBaseUrl`; the SDK is only used for offline address validation.
+   */
+  private async api<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${env.bitgoBaseUrl}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${env.bitgoAccessToken}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`bitgo api ${res.status}: ${text.slice(0, 300)}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return (await res.json()) as T;
   }
+
 
   /**
    * Validate a destination address for a coin. Falls back to a lenient
@@ -124,65 +160,65 @@ export class BitGoClient {
     }
     return /^[A-Za-z0-9]{8,}$/.test(address);
   }
-
-  /**
-   * Balance pre-check (FR-10). Returns spendable + fee-adjusted maximum.
-   * `maximumSpendable` may be unavailable for some coins → null.
-   */
-  async checkBalance(coinName: string, walletId: string, recipientAddress: string) {
-    const wallet = await this.getWallet(coinName, walletId);
-    await wallet.refresh();
+  async checkBalance(coinName: string, walletId: string, recipientAddress: string): Promise<BalanceSnapshot> {
+    const wallet = await this.api<{ spendableBalanceString?: string }>(
+      'GET',
+      `/api/v2/${coinName}/wallet/${walletId}`,
+    );
     let maximumSpendable: string | null = null;
     try {
-      const res = await wallet.maximumSpendable({ recipientAddress });
-      maximumSpendable = String(res?.maximumSpendable ?? '');
+      const ms = await this.api<{ maximumSpendable?: string }>(
+        'GET',
+        `/api/v2/${coinName}/wallet/${walletId}/maximumSpendable?address=${encodeURIComponent(recipientAddress)}`,
+      );
+      maximumSpendable = ms.maximumSpendable ?? null;
     } catch (err) {
       logger.debug({ walletId, err }, 'maximumSpendable unavailable');
     }
     return {
-      spendable: wallet.spendableBalanceString() as string,
+      spendable: wallet.spendableBalanceString ?? '0',
       maximumSpendable,
     };
   }
 
-  /**
-   * Create + submit a single-recipient transaction through the normal BitGo
-   * pipeline. `sequenceId` makes retries idempotent (FR-6).
-   *
-   * For **custody wallets** BitGo holds the keys, so no user key share needs
-   * decrypting — `walletPassphrase` is only included when one is actually
-   * configured (not required).
-   */
-  async sendMany(params: {
-    coin: string;
-    walletId: string;
-    address: string;
-    amount: string;
-    minConfirms?: number;
-    sequenceId: string;
-    comment?: string;
-  }) {
-    const wallet = await this.getWallet(params.coin, params.walletId);
-    const options: {
-      type: string;
-      recipients: { address: string; amount: string }[];
-      walletPassphrase?: string;
-      minConfirms: number;
-      sequenceId: string;
-      comment?: string;
-    } = {
-      // 'transfer' is the EVM payment intent type; without it the SDK throws
-      // "transaction type not supported: undefined" for custody/TSS wallets.
-      type: 'transfer',
-      recipients: [{ address: params.address, amount: params.amount }],
-      minConfirms: params.minConfirms ?? 0,
-      sequenceId: params.sequenceId,
-      comment: params.comment,
-    };
-    if (env.bitgoWalletPassphrase && !env.bitgoWalletPassphrase.startsWith('<set-')) {
-      options.walletPassphrase = env.bitgoWalletPassphrase;
+  /** Create a txrequest for one intent (payment / transferToken). */
+  async createTxRequest(
+    walletId: string,
+    intent: Record<string, unknown>,
+  ): Promise<{ txRequestId: string; state: string }> {
+    const res = await this.api<{ txRequestId: string; state: string }>(
+      'POST',
+      `/api/v2/wallet/${walletId}/txrequests`,
+      { apiVersion: 'full', intent },
+    );
+    return { txRequestId: res.txRequestId, state: res.state };
+  }
+
+  /** Latest version of a txrequest, reduced to the fields the poller needs. */
+  async fetchLatestTxRequest(walletId: string, txRequestId: string): Promise<TxRequestView | null> {
+    const res = await this.api<{
+      txRequests?: Array<{
+        txRequestId: string;
+        state?: string;
+        isCanceled?: boolean;
+        transactions?: Array<{ txHash?: string }>;
+      }>;
+    }>(
+      'GET',
+      `/api/v2/wallet/${walletId}/txrequests?txRequestIds=${encodeURIComponent(txRequestId)}&latest=true`,
+    );
+    const txr = res.txRequests?.[0];
+    if (!txr) {
+      return null;
     }
-    return wallet.sendMany(options);
+    return {
+      txRequestId: txr.txRequestId,
+      state: txr.state ?? 'unknown',
+      isCanceled: txr.isCanceled === true,
+      txHashes: (txr.transactions ?? [])
+        .map((t) => t.txHash)
+        .filter((h): h is string => typeof h === 'string' && h.length > 0),
+    };
   }
 }
 

@@ -71,6 +71,10 @@ curl -X POST $API/schedules -H "$KEY" -H "content-type: application/json" \
   -d '{"walletId":"<walletId>","coin":"tbaseeth","destinationAddress":"0xde709f2102306220921060314715629080e2fb77",\
        "amount":"50000","frequency":"weekly","timezone":"UTC"}'
 
+# Optional trigger condition — balance OR timestamp, never both:
+#   "condition":{"type":"balance","operator":"above","limit":"500000"}
+#   "condition":{"type":"timestamp","at":"2026-10-01T00:00:00Z"}
+
 # List schedules
 curl $API/schedules -H "$KEY"
 

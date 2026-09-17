@@ -18,8 +18,9 @@ export const env = {
 
   // --- BitGo (hardcoded for hackathon demo; NOT KMS-backed) ---
   bitgoEnv: (process.env.BITGO_ENV ?? 'test') as 'test' | 'prod',
-  bitgoAccessToken:
-    process.env.BITGO_ACCESS_TOKEN ?? '<set-your-testnet-access-token>',
+  bitgoAccessToken: process.env.BITGO_ACCESS_TOKEN ?? '<set-your-testnet-access-token>',
+  // REST base for the TxRequests API (staging by default for this demo).
+  bitgoBaseUrl: process.env.BITGO_BASE_URL ?? 'https://app.bitgo-staging.com',
   // Wallet passphrase used to decrypt the user key share for signing.
   // NOT required for custody wallets (BitGo holds the keys) — only set it
   // for self-custody/hot wallets.
@@ -36,6 +37,11 @@ export const env = {
   workerStuckClaimMs: int(process.env.WORKER_STUCK_CLAIM_MS, 15 * 60_000),
   workerMaxAttempts: int(process.env.WORKER_MAX_ATTEMPTS, 3),
   workerBatchSize: int(process.env.WORKER_BATCH_SIZE, 100),
+  // Inline post-creation poll of the created txrequest (best-effort).
+  txRequestPollAttempts: int(process.env.TX_REQUEST_POLL_ATTEMPTS, 5),
+  txRequestPollIntervalMs: int(process.env.TX_REQUEST_POLL_INTERVAL_MS, 2_000),
+  // Tick-poller re-fetch cadence for in-flight txrequests; 0 = every tick.
+  txRequestStatusRefreshMs: int(process.env.TX_REQUEST_STATUS_REFRESH_MS, 0),
   // Retry backoff schedule in ms (FR-9: 1m / 5m / 25m).
   retryBackoffMs: (process.env.RETRY_BACKOFF_MS ?? '60000,300000,1500000')
     .split(',')

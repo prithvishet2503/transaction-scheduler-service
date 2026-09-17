@@ -3,8 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // --- mock dependencies ---
 const mCreate = vi.fn();
 vi.mock('../src/models/ScheduledTransaction', () => ({
-  ScheduledTransaction: { create: (...args: unknown[]) => mCreate(...args) },
+  ScheduledTransaction: {
+    create: (...args: unknown[]) => mCreate(...args),
+    findOne: (...a: unknown[]) => mFindOne(...a),
+    findOneAndUpdate: (...a: unknown[]) => mFindOneAndUpdate(...a),
+  },
 }));
+const mFindOne = vi.fn();
+const mFindOneAndUpdate = vi.fn();
 
 const mIsValidAddress = vi.fn();
 vi.mock('../src/services/bitgoClient', () => ({
@@ -13,7 +19,7 @@ vi.mock('../src/services/bitgoClient', () => ({
 
 // Import after mocks are registered.
 // eslint-disable-next-line import/first
-import { createSchedule } from '../src/services/scheduleService';
+import { createSchedule, updateSchedule } from '../src/services/scheduleService';
 
 describe('createSchedule', () => {
   beforeEach(() => {
@@ -104,9 +110,137 @@ describe('createSchedule', () => {
   });
 });
 
+describe('createSchedule trigger condition', () => {
+  const validBase = {
+    userId: 'u1',
+    walletId: 'w1',
+    coin: 'tbaseeth',
+    destinationAddress: '0xde709f2102306220921060314715629080e2fb77',
+    amount: '1000',
+    frequency: 'daily' as const,
+    timezone: 'UTC',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.MIN_REMINDER_OFFSET_MS = '3600000';
+    process.env.DEFAULT_REMINDER_OFFSET_MS = '86400000';
+    mIsValidAddress.mockResolvedValue(true);
+    mCreate.mockResolvedValue({
+      _id: { toString: () => 'sched_9' },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  });
+
+  it('persists a balance condition (flat fields, no timestamp)', async () => {
+    await createSchedule({ ...validBase, condition: { type: 'balance', operator: 'above', limit: '500000' } });
+    const arg = mCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.conditionType).toBe('balance');
+    expect(arg.conditionOperator).toBe('above');
+    expect(arg.conditionLimit).toBe('500000');
+    expect(arg.conditionAt).toBeUndefined();
+  });
+
+  it('persists a timestamp condition (conditionAt Date, no balance fields)', async () => {
+    await createSchedule({ ...validBase, condition: { type: 'timestamp', at: '2026-10-01T00:00:00Z' } });
+    const arg = mCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.conditionType).toBe('timestamp');
+    expect(arg.conditionAt).toEqual(new Date('2026-10-01T00:00:00Z'));
+    expect(arg.conditionOperator).toBeUndefined();
+    expect(arg.conditionLimit).toBeUndefined();
+  });
+
+  it('rejects a request carrying both a balance limit and a timestamp', async () => {
+    await expect(
+      createSchedule({
+        ...validBase,
+        condition: { type: 'balance', operator: 'above', limit: '5', at: '2026-10-01T00:00:00Z' } as never,
+      }),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining('not both') });
+    expect(mCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a timestamp condition carrying balance fields', async () => {
+    await expect(
+      createSchedule({
+        ...validBase,
+        condition: { type: 'timestamp', at: '2026-10-01T00:00:00Z', limit: '5' } as never,
+      }),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining('not both') });
+    expect(mCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid operator, limit, type, or date', async () => {
+    for (const condition of [
+      { type: 'balance', operator: 'between', limit: '5' },
+      { type: 'balance', operator: 'above', limit: '0' },
+      { type: 'balance', operator: 'above', limit: '1.5' },
+      { type: 'balance', operator: 'above' },
+      { type: 'cron' },
+      { type: 'timestamp', at: 'not-a-date' },
+      { type: 'timestamp' },
+    ] as never[]) {
+      await expect(createSchedule({ ...validBase, condition })).rejects.toMatchObject({ status: 400 });
+    }
+    expect(mCreate).not.toHaveBeenCalled();
+  });
+});
+
 function bitgoBalanceCheckSpy(): number {
   // The mock only defines isValidAddress; if a balance path existed it would
   // be a separate spy. For FR-4 we assert create never touches balance by
   // checking no call to a balance method was registered.
   return 0;
 }
+
+describe('updateSchedule trigger condition', () => {
+  const schedDoc = {
+    _id: { toString: () => 'sched_5' },
+    userId: 'u1',
+    walletId: 'w1',
+    coin: 'tbaseeth',
+    destinationAddress: '0xde709f2102306220921060314715629080e2fb77',
+    amount: '1000',
+    frequency: 'daily',
+    timezone: 'UTC',
+    reminderOffsetMs: 86400000,
+    status: 'active',
+    nextRunAt: new Date('2026-09-24T00:00:00Z'),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  const SCHED_ID = '507f1f77bcf86cd799439011';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.MIN_REMINDER_OFFSET_MS = '3600000';
+    process.env.DEFAULT_REMINDER_OFFSET_MS = '86400000';
+    mFindOne.mockResolvedValue(schedDoc);
+    mFindOneAndUpdate.mockImplementation(() => Promise.resolve(schedDoc));
+  });
+
+  it('persists a balance condition patch', async () => {
+    await updateSchedule('u1', SCHED_ID, { condition: { type: 'balance', operator: 'below', limit: '250' } });
+    const set = mFindOneAndUpdate.mock.calls[0][1].$set;
+    expect(set.conditionType).toBe('balance');
+    expect(set.conditionOperator).toBe('below');
+    expect(set.conditionLimit).toBe('250');
+  });
+
+  it('clears the condition when condition is null', async () => {
+    await updateSchedule('u1', SCHED_ID, { condition: null });
+    const set = mFindOneAndUpdate.mock.calls[0][1].$set;
+    expect(set.conditionType).toBeNull();
+    expect(set.conditionAt).toBeNull();
+  });
+
+  it('rejects a both-variants condition patch (not both)', async () => {
+    await expect(
+      updateSchedule('u1', SCHED_ID, {
+        condition: { type: 'timestamp', at: '2026-10-01T00:00:00Z', limit: '5' } as never,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(mFindOneAndUpdate).not.toHaveBeenCalled();
+  });
+});
