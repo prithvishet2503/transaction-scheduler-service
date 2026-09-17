@@ -1,0 +1,39 @@
+{
+  "name": "transaction-scheduler-service",
+  "version": "1.0.0",
+  "description": "Standalone BitGo transaction scheduler microservice — recurring scheduled payments executed through the normal BitGo pipeline.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "worker": "node dist/workers/cronWorker.js",
+    "worker:dev": "tsx src/workers/cronWorker.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src test --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
+  },
+  "dependencies": {
+    "@bitgo/sdk-api": "^3.0.0",
+    "@bitgo/sdk-coin-btc": "^2.14.0",
+    "@bitgo/sdk-core": "^38.16.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "luxon": "^3.5.0",
+    "mongoose": "^8.6.0",
+    "pino": "^9.4.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.1"
+  }
+}

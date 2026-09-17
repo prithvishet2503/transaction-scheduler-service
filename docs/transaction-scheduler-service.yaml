@@ -1,0 +1,118 @@
+openapi: 3.0.3
+info:
+  title: Transaction Scheduler Service
+  version: 1.0.0
+  description: Recurring scheduled crypto payments on BitGo (hackathon demo).
+servers:
+  - url: http://localhost:3000/api/v1
+security:
+  - ApiKeyAuth: []
+paths:
+  /schedules:
+    post:
+      summary: Create a schedule (zero balance accepted)
+      operationId: createSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleInput'
+      responses:
+        '201': { description: Created }
+        '400': { description: Invalid input }
+    get:
+      summary: List schedules
+      operationId: listSchedules
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /schedules/{id}:
+    get:
+      summary: Get a schedule
+      operationId: getSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '404': { description: Not found }
+    patch:
+      summary: Edit amount/address/frequency/endAt/note/reminderOffset
+      operationId: updateSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: OK }
+    delete:
+      summary: Soft-cancel a schedule
+      operationId: cancelSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /schedules/{id}/pause:
+    post:
+      summary: Pause a schedule
+      operationId: pauseSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /schedules/{id}/resume:
+    post:
+      summary: Resume a schedule
+      operationId: resumeSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /schedules/{id}/executions:
+    get:
+      summary: Execution history for a schedule
+      operationId: listExecutions
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /webhooks/bitgo:
+    post:
+      summary: BitGo transfer webhook (marks execution confirmed)
+      operationId: bitgoWebhook
+      security: []
+      responses:
+        '200': { description: OK }
+        '401': { description: Bad signature }
+  /worker/tick:
+    post:
+      summary: Run one worker tick manually (demo/testing)
+      operationId: workerTick
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    ScheduleInput:
+      type: object
+      required: [walletId, coin, destinationAddress, amount, frequency]
+      properties:
+        walletId: { type: string }
+        coin: { type: string }
+        destinationAddress: { type: string }
+        amount: { type: string, description: 'base units as string' }
+        frequency: { type: string, enum: [one_time, daily, weekly, monthly] }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        timezone: { type: string, default: 'UTC' }
+        note: { type: string }
+        reminderOffsetMs: { type: integer }

@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-scheduler-api
+  labels:
+    app: transaction-scheduler
+    component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-scheduler
+      component: api
+  template:
+    metadata:
+      labels:
+        app: transaction-scheduler
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: transaction-scheduler-service:latest
+          imagePullPolicy: IfNotPresent
+          args: ["node", "dist/server.js"]
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: transaction-scheduler-config
+            - secretRef:
+                name: transaction-scheduler-secrets
+          readinessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-scheduler-worker
+  labels:
+    app: transaction-scheduler
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: transaction-scheduler
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: transaction-scheduler
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: transaction-scheduler-service:latest
+          imagePullPolicy: IfNotPresent
+          args: ["node", "dist/workers/cronWorker.js"]
+          envFrom:
+            - configMapRef:
+                name: transaction-scheduler-config
+            - secretRef:
+                name: transaction-scheduler-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-scheduler-reaper
+  labels:
+    app: transaction-scheduler
+    component: reaper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-scheduler
+      component: reaper
+  template:
+    metadata:
+      labels:
+        app: transaction-scheduler
+        component: reaper
+    spec:
+      containers:
+        - name: reaper
+          image: transaction-scheduler-service:latest
+          imagePullPolicy: IfNotPresent
+          args: ["node", "dist/workers/reaper.js"]
+          envFrom:
+            - configMapRef:
+                name: transaction-scheduler-config
+            - secretRef:
+                name: transaction-scheduler-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi

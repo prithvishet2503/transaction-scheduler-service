@@ -1,0 +1,11 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: tx-scheduler-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - tx-scheduler-mongo-data:/data/db
+
+volumes:
+  tx-scheduler-mongo-data:

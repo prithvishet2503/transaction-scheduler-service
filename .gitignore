@@ -1,0 +1,35 @@
+# Node
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Mac
+.DS_Store
+
+# Nix / direnv
+.direnv/
+result
+
+# Local stack runtime files
+.local-stack.pids
+.local-stack-port-forwards.log
+
+# Claude Code local configuration
+CLAUDE.local.md
+.claude/skills.local/
+.claude/agents.local/
+.claude/worktrees/
+
+# Test / coverage
+coverage/

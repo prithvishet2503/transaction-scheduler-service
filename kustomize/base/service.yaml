@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-scheduler
+  labels:
+    app: transaction-scheduler
+spec:
+  selector:
+    app: transaction-scheduler
+    component: api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transaction-scheduler-config
+data:
+  NODE_ENV: "development"
+  PORT: "3000"
+  BITGO_ENV: "test"
+  COINS: "tbtc"
+  WORKER_POLL_INTERVAL_MS: "30000"
+  WORKER_LEASE_TTL_MS: "120000"
+  WORKER_STUCK_CLAIM_MS: "900000"
+  WORKER_MAX_ATTEMPTS: "3"
+  RETRY_BACKOFF_MS: "60000,300000,1500000"
+  DEFAULT_REMINDER_OFFSET_MS: "86400000"
+  MIN_REMINDER_OFFSET_MS: "3600000"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transaction-scheduler-secrets
+stringData:
+  MONGO_URI: "mongodb://mongodb:27017/transaction_scheduler"
+  BITGO_ACCESS_TOKEN: "<set-me>"
+  BITGO_WALLET_PASSPHRASE: "<set-me>"
+  API_KEY: "dev-api-key"
+  WEBHOOK_SECRET: "dev-webhook-secret"
