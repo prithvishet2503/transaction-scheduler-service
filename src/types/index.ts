@@ -13,7 +13,23 @@ export type ExecutionStatus =
   | 'failed'
   | 'confirmed';
 
-export type DefaultReason = 'INSUFFICIENT_BALANCE';
+export type DefaultReason = 'INSUFFICIENT_BALANCE' | 'BALANCE_CONDITION_NOT_MET';
+
+/**
+ * Trigger condition on a schedule. A creation request carries exactly one
+ * variant — balance-relative or timestamp — never both (mutually exclusive).
+ */
+export type BalanceConditionOperator = 'above' | 'below' | 'equals';
+
+/** Condition as accepted by the creation API. */
+export type ScheduleConditionInput =
+  | { type: 'balance'; operator: BalanceConditionOperator; limit: string } // base units
+  | { type: 'timestamp'; at: string }; // ISO
+
+/** Condition as stored/returned (timestamp materialized to a Date). */
+export type ScheduleCondition =
+  | { type: 'balance'; operator: BalanceConditionOperator; limit: string } // base units
+  | { type: 'timestamp'; at: Date };
 
 export type NotificationType =
   | 'schedule_created'
@@ -37,14 +53,16 @@ export interface ScheduleInput {
   destinationAddress?: string;
   /** Single-payee shortcut; ignored when `recipients` is provided. */
   amount?: string;
-  /** One or more payees. One BitGo `sendMany` per occurrence. */
+  /** One or more payees. One BitGo send per occurrence. */
   recipients?: Recipient[];
+  tokenName?: string; // when set, the send uses a transferToken intent
   frequency: Frequency;
   startAt?: string; // ISO
   endAt?: string; // ISO
   timezone: string; // IANA
   note?: string;
   reminderOffsetMs?: number;
+  condition?: ScheduleConditionInput;
 }
 
 export interface ScheduleRecord {
@@ -62,9 +80,11 @@ export interface ScheduleRecord {
   timezone: string;
   note?: string;
   reminderOffsetMs: number;
+  condition?: ScheduleCondition;
   status: ScheduleStatus;
   nextRunAt: Date | null;
   lastRunAt?: Date | null;
+  tokenName?: string;
   consecutiveDefaultedCount: number;
   lastReminderSentForRunAt?: Date | null;
   createdAt: Date;
@@ -79,6 +99,8 @@ export interface ExecutionRecord {
   reason?: string;
   balanceSnapshot?: { spendable: string; maximumSpendable: string | null };
   txid?: string;
+  txRequestId?: string;
+  walletId?: string;
   pendingApprovalId?: string;
   attempt: number;
   leasedBy?: string;

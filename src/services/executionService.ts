@@ -6,7 +6,8 @@ import { computeNextRun } from '../utils/frequency';
 import { recipientsFromSchedule, sumAmounts } from '../utils/recipients';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
-import type { NotificationType } from '../types';
+import type { BalanceSnapshot, TxRequestView } from './bitgoClient';
+import type { DefaultReason, NotificationType } from '../types';
 
 /**
  * Core execution state machine for one schedule occurrence.
@@ -96,42 +97,105 @@ function retryBackoff(attempt: number): number {
   return env.retryBackoffMs[idx] ?? 60_000;
 }
 
-function isObjectWithId(value: unknown): value is { id: unknown } {
-  return !!value && typeof value === 'object' && 'id' in value;
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+
+type OccurrenceOutcome =
+  | { outcome: 'defaulted'; reason: DefaultReason; snapshot: BalanceSnapshot }
+  | { outcome: 'sent'; snapshot: BalanceSnapshot; txRequestId: string; view: TxRequestView }
+  | { outcome: 'token_error'; snapshot: BalanceSnapshot; err: unknown }
+  | { outcome: 'error'; snapshot: BalanceSnapshot; err: unknown };
+
+function balanceConditionMet(
+  operator: 'above' | 'below' | 'equals',
+  spendable: bigint,
+  limit: bigint,
+): boolean {
+  if (operator === 'above') return spendable > limit;
+  if (operator === 'below') return spendable < limit;
+  return spendable === limit;
 }
 
 /**
  * Balance pre-check + send (FR-10/FR-11). Two-layer rule:
  *  - spendableBalanceString < amount  → default (no transaction started)
  *  - server-side `insufficient_funds` → also default
+ * A balance trigger condition is evaluated against the same snapshot; unmet →
+ * default with BALANCE_CONDITION_NOT_MET (no transaction started).
  */
-async function executeOccurrence(schedule: InstanceType<typeof ScheduledTransaction>, executionId: string) {
+async function executeOccurrence(
+  schedule: InstanceType<typeof ScheduledTransaction>,
+  executionId: string,
+): Promise<OccurrenceOutcome> {
   const recipients = recipientsFromSchedule(schedule);
   const totalAmount = sumAmounts(recipients);
   const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipients[0].address);
-  if (BigInt(snapshot.spendable) < BigInt(totalAmount)) {
-    return { outcome: 'defaulted' as const, snapshot };
-  }
-  try {
-    const result = await bitgoClient.sendMany({
-      coin: schedule.coin,
-      walletId: schedule.walletId,
-      recipients,
-      sequenceId: `${schedule._id.toString()}:${schedule.nextRunAt?.getTime() ?? Date.now()}`,
-      comment: `scheduled:${schedule._id.toString()}`,
-    });
-    return { outcome: 'sent' as const, snapshot, result };
-  } catch (err) {
-    const code = (err as { code?: string })?.code;
-    if (code === 'insufficient_funds') {
-      return { outcome: 'defaulted' as const, snapshot };
+  const spendable = BigInt(snapshot.spendable);
+  if (schedule.conditionType === 'balance' && schedule.conditionOperator && schedule.conditionLimit) {
+    if (!balanceConditionMet(schedule.conditionOperator, spendable, BigInt(schedule.conditionLimit))) {
+      return { outcome: 'defaulted', reason: 'BALANCE_CONDITION_NOT_MET', snapshot };
     }
-    if (code === 'invalidToken') {
+  }
+  if (spendable < BigInt(totalAmount)) {
+    return { outcome: 'defaulted', reason: 'INSUFFICIENT_BALANCE', snapshot };
+  }
+  const intentRecipients = recipients.map((r) => {
+    const entry: Record<string, unknown> = {
+      address: { address: r.address },
+      amount: { value: r.amount, symbol: schedule.tokenName ?? schedule.coin },
+    };
+    if (schedule.tokenName) {
+      // Token schedules are EVM ERC-20-like in this service; Wallet Platform
+      // rejects a transferToken recipient without tokenData.
+      entry.tokenData = {
+        tokenName: schedule.tokenName,
+        tokenType: 'ERC20',
+        tokenQuantity: r.amount,
+      };
+    }
+    return entry;
+  });
+  const intent: Record<string, unknown> = {
+    intentType: schedule.tokenName ? 'transferToken' : 'payment',
+    recipients: intentRecipients,
+    sequenceId: `${schedule._id.toString()}:${schedule.nextRunAt?.getTime() ?? Date.now()}`,
+    comment: `scheduled:${schedule._id.toString()}`,
+  };
+  try {
+    const created = await bitgoClient.createTxRequest(schedule.walletId, intent);
+    // Bounded inline poll after creating: hot wallets usually sign + broadcast
+    // within seconds, so the document can move past 'pending_approval' here.
+    let view = await bitgoClient.fetchLatestTxRequest(schedule.walletId, created.txRequestId);
+    for (
+      let i = 0;
+      i < env.txRequestPollAttempts && view && view.txHashes.length === 0 && !view.isCanceled;
+      i += 1
+    ) {
+      await delay(env.txRequestPollIntervalMs);
+      view = await bitgoClient.fetchLatestTxRequest(schedule.walletId, created.txRequestId);
+    }
+    return {
+      outcome: 'sent',
+      snapshot,
+      txRequestId: created.txRequestId,
+      view: view ?? { txRequestId: created.txRequestId, state: created.state, isCanceled: false, txHashes: [] },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: number } | undefined)?.status;
+    if (msg.includes('insufficient_funds')) {
+      return { outcome: 'defaulted', reason: 'INSUFFICIENT_BALANCE', snapshot };
+    }
+    if (status === 401 || status === 403) {
       // Ops alert path — token is paused-safe: leave the occurrence claimed.
       logger.error({ err }, 'bitgo access token invalid — executions pause-safe');
-      return { outcome: 'token_error' as const, snapshot, err };
+      return { outcome: 'token_error', snapshot, err };
     }
-    return { outcome: 'error' as const, snapshot, err };
+    return { outcome: 'error', snapshot, err };
   }
 }
 
@@ -142,6 +206,11 @@ export async function processDueSchedule(
 ): Promise<void> {
   const scheduledFor = schedule.nextRunAt;
   if (!scheduledFor) {
+    return;
+  }
+  // Timestamp trigger condition: the occurrence cannot fire before `at`;
+  // leave unclaimed and pick it up on a later tick.
+  if (schedule.conditionType === 'timestamp' && schedule.conditionAt && new Date() < schedule.conditionAt) {
     return;
   }
   const execution = await ensureExecution(schedule._id.toString(), scheduledFor);
@@ -160,20 +229,20 @@ export async function processDueSchedule(
     // FR-10/11: no transaction started; schedule stays active, next occurrence proceeds.
     await ScheduleExecution.updateOne(
       { _id: claimed._id },
-      { $set: { status: 'defaulted', reason: 'INSUFFICIENT_BALANCE', balanceSnapshot: run.snapshot } },
+      { $set: { status: 'defaulted', reason: run.reason, balanceSnapshot: run.snapshot } },
     );
     schedule.consecutiveDefaultedCount += 1;
     schedule.lastRunAt = scheduledFor;
     await advanceSchedule(schedule);
     await emit('defaulted', schedule, {
       executionId: claimed._id.toString(),
-      reason: 'INSUFFICIENT_BALANCE',
+      reason: run.reason,
       scheduledFor: scheduledFor.toISOString(),
       nextRunAt: schedule.nextRunAt?.toISOString(),
     });
     logger.warn(
-      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), balance: run.snapshot.spendable },
-      'occurrence defaulted (insufficient balance)',
+      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), reason: run.reason },
+      'occurrence defaulted',
     );
     return;
   }
@@ -215,49 +284,116 @@ export async function processDueSchedule(
   }
 
   // outcome === 'sent'
-  const result = run.result as Record<string, unknown>;
-  // Custody sends return { pendingApproval: { id, ... }, ... }; hot sends
-  // return { txid, pendingApprovalId? }. Normalize both.
-  let pendingApprovalId =
-    typeof result?.pendingApprovalId === 'string' ? result.pendingApprovalId : undefined;
-  const pa = result?.pendingApproval;
-  if (!pendingApprovalId && isObjectWithId(pa) && typeof pa.id === 'string') {
-    pendingApprovalId = pa.id;
-  }
-  const txid = result?.txid as string | undefined;
-
-  if (pendingApprovalId) {
-    // FR-7: policy/approval interception is first-class, not an error.
+  const { txRequestId, view } = run;
+  if (view.isCanceled) {
     await ScheduleExecution.updateOne(
       { _id: claimed._id },
-      { $set: { status: 'pending_approval', pendingApprovalId, balanceSnapshot: run.snapshot } },
+      { $set: { status: 'failed', txRequestId, error: 'txrequest canceled', balanceSnapshot: run.snapshot } },
     );
-    schedule.lastRunAt = scheduledFor;
-    await advanceSchedule(schedule);
-    logger.info(
-      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), pendingApprovalId },
-      'occurrence awaiting approval',
+    logger.warn(
+      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId },
+      'txrequest canceled',
     );
     return;
   }
 
-  // Broadcast submitted; settlement is async — 'confirmed' arrives via webhook (FR-8).
+  const txid = view.txHashes[0];
+  if (txid) {
+    // Broadcast submitted; settlement is async — 'confirmed' arrives via webhook (FR-8).
+    await ScheduleExecution.updateOne(
+      { _id: claimed._id },
+      { $set: { status: 'executed', txid, txRequestId, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
+    );
+    schedule.consecutiveDefaultedCount = 0;
+    schedule.lastRunAt = scheduledFor;
+    await advanceSchedule(schedule);
+    logger.info(
+      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, txid },
+      'occurrence executed (awaiting confirmation)',
+    );
+    return;
+  }
+
+  // Txrequest created + accepted; signing/approval still in flight (FR-7).
+  // The tick-driven poller (pollPendingTxRequests) advances the document later.
   await ScheduleExecution.updateOne(
     { _id: claimed._id },
-    { $set: { status: 'executed', txid, balanceSnapshot: run.snapshot } },
+    { $set: { status: 'pending_approval', txRequestId, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
   );
-  schedule.consecutiveDefaultedCount = 0;
   schedule.lastRunAt = scheduledFor;
   await advanceSchedule(schedule);
   logger.info(
-    { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txid },
-    'occurrence executed (awaiting confirmation)',
+    { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, state: view.state },
+    'occurrence txrequest awaiting signing/approval',
   );
+}
+
+/**
+ * Advance executions with an in-flight txrequest: each tick re-fetches the
+ * latest txrequest version and moves the document forward — canceled →
+ * failed, txHash seen → executed (+txid). 'confirmed' still arrives via the
+ * transfer webhook (FR-8).
+ */
+export async function pollPendingTxRequests(): Promise<void> {
+  const inFlight = await ScheduleExecution.find({
+    txRequestId: { $exists: true, $ne: null },
+    status: { $in: ['pending_approval', 'executed'] },
+  }).limit(env.workerBatchSize);
+  const refreshMs = env.txRequestStatusRefreshMs;
+  const now = new Date();
+  for (const exec of inFlight) {
+    if (!exec.walletId || !exec.txRequestId) {
+      continue;
+    }
+    if (
+      refreshMs > 0 &&
+      exec.txRequestLastPolledAt &&
+      now.getTime() - exec.txRequestLastPolledAt.getTime() < refreshMs
+    ) {
+      continue; // fetched recently — next tick will pick it up
+    }
+    let view: TxRequestView | null;
+    try {
+      view = await bitgoClient.fetchLatestTxRequest(exec.walletId, exec.txRequestId);
+    } catch (err) {
+      logger.warn({ executionId: exec._id.toString(), err }, 'txrequest poll failed');
+      continue;
+    }
+    if (!view) {
+      continue;
+    }
+    if (view.isCanceled) {
+      await ScheduleExecution.updateOne(
+        { _id: exec._id },
+        { $set: { status: 'failed', error: 'txrequest canceled', txRequestLastPolledAt: now } },
+      );
+      logger.warn({ executionId: exec._id.toString(), txRequestId: exec.txRequestId }, 'txrequest canceled');
+      continue;
+    }
+    const txid = view.txHashes[0];
+    if (txid && exec.status !== 'executed') {
+      await ScheduleExecution.updateOne(
+        { _id: exec._id },
+        { $set: { status: 'executed', txid, txRequestLastPolledAt: now } },
+      );
+      logger.info({ executionId: exec._id.toString(), txRequestId: exec.txRequestId, txid }, 'txrequest broadcast');
+    } else {
+      // Still in flight — record the fetch so the refresh interval is honored.
+      await ScheduleExecution.updateOne(
+        { _id: exec._id },
+        { $set: { txRequestLastPolledAt: now } },
+      );
+    }
+  }
 }
 
 /** Send the upcoming-payment reminder for a schedule, exactly once per occurrence (FR-14). */
 export async function sendReminderIfDue(schedule: InstanceType<typeof ScheduledTransaction>) {
   if (schedule.status !== 'active' || !schedule.nextRunAt) {
+    return;
+  }
+  // Timestamp trigger condition: no reminder before the trigger time.
+  if (schedule.conditionType === 'timestamp' && schedule.conditionAt && new Date() < schedule.conditionAt) {
     return;
   }
   const dueAt = new Date(schedule.nextRunAt.getTime() - schedule.reminderOffsetMs);

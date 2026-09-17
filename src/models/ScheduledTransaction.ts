@@ -1,5 +1,5 @@
 import { Schema, model, Types } from 'mongoose';
-import type { Frequency, Recipient, ScheduleStatus } from '../types';
+import type { BalanceConditionOperator, Frequency, Recipient, ScheduleStatus } from '../types';
 
 export interface ScheduledTransactionDoc {
   _id: Types.ObjectId;
@@ -9,6 +9,7 @@ export interface ScheduledTransactionDoc {
   coin: string;
   destinationAddress: string;
   amount: string; // total of recipients, base units as string
+  tokenName?: string; // e.g. 'hteth:cusdt' — when set, sends use a transferToken intent
   recipients?: Recipient[];
   frequency: Frequency;
   startAt?: Date;
@@ -21,6 +22,12 @@ export interface ScheduledTransactionDoc {
   lastRunAt?: Date | null;
   consecutiveDefaultedCount: number;
   lastReminderSentForRunAt?: Date | null;
+  // Trigger condition (mutually exclusive variants), stored flat:
+  // 'balance' → conditionOperator + conditionLimit; 'timestamp' → conditionAt.
+  conditionType?: 'balance' | 'timestamp';
+  conditionOperator?: BalanceConditionOperator;
+  conditionLimit?: string; // base units
+  conditionAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -50,6 +57,7 @@ const scheduledTransactionSchema = new Schema<ScheduledTransactionDoc>(
     },
     startAt: { type: Date },
     endAt: { type: Date },
+    tokenName: { type: String },
     timezone: { type: String, required: true, default: 'UTC' },
     note: { type: String },
     reminderOffsetMs: { type: Number, required: true },
@@ -62,6 +70,10 @@ const scheduledTransactionSchema = new Schema<ScheduledTransactionDoc>(
     nextRunAt: { type: Date, index: true },
     lastRunAt: { type: Date },
     consecutiveDefaultedCount: { type: Number, default: 0 },
+    conditionType: { type: String, enum: ['balance', 'timestamp'] },
+    conditionOperator: { type: String, enum: ['above', 'below', 'equals'] },
+    conditionLimit: { type: String },
+    conditionAt: { type: Date },
     lastReminderSentForRunAt: { type: Date },
   },
   { timestamps: true, collection: 'scheduledTransactions' },

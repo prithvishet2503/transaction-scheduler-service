@@ -9,7 +9,14 @@ import {
   sumAmounts,
 } from '../utils/recipients';
 import { env } from '../config/env';
-import type { Recipient, ScheduleInput, ScheduleRecord } from '../types';
+import type {
+  BalanceConditionOperator,
+  Recipient,
+  ScheduleCondition,
+  ScheduleConditionInput,
+  ScheduleInput,
+  ScheduleRecord,
+} from '../types';
 import { logger } from '../utils/logger';
 
 export class ScheduleError extends Error {
@@ -32,7 +39,9 @@ function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecor
     destinationAddress: recipients[0].address,
     amount: sumAmounts(recipients),
     recipients,
+    tokenName: doc.tokenName,
     frequency: doc.frequency,
+    condition: docCondition(doc),
     startAt: doc.startAt,
     endAt: doc.endAt,
     timezone: doc.timezone,
@@ -51,6 +60,71 @@ function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecor
 function reminderOffset(input: ScheduleInput): number {
   const offset = input.reminderOffsetMs ?? env.defaultReminderOffsetMs;
   return Math.max(offset, env.minReminderOffsetMs);
+}
+
+/**
+ * Validate + normalize the trigger condition. A request carries exactly one
+ * variant — balance-relative or timestamp — never both; anything else is a
+ * 400. Returns the flat doc fields to persist.
+ */
+function normalizeCondition(raw: ScheduleConditionInput | undefined | null): {
+  conditionType?: 'balance' | 'timestamp';
+  conditionOperator?: BalanceConditionOperator;
+  conditionLimit?: string;
+  conditionAt?: Date;
+} {
+  if (raw === undefined || raw === null) {
+    return {};
+  }
+  const c = raw as Record<string, unknown>;
+  if (c.type !== 'balance' && c.type !== 'timestamp') {
+    throw new ScheduleError("condition.type must be 'balance' or 'timestamp'", 400);
+  }
+  if (c.type === 'balance') {
+    if (c.at !== undefined) {
+      throw new ScheduleError('condition: provide either a balance limit or a timestamp (at), not both', 400);
+    }
+    if (c.operator !== 'above' && c.operator !== 'below' && c.operator !== 'equals') {
+      throw new ScheduleError("condition.operator must be 'above', 'below' or 'equals'", 400);
+    }
+    if (typeof c.limit !== 'string') {
+      throw new ScheduleError('condition.limit must be a string amount in base units', 400);
+    }
+    let limit: bigint;
+    try {
+      limit = BigInt(c.limit);
+    } catch {
+      throw new ScheduleError('condition.limit must be a positive integer in base units', 400);
+    }
+    if (limit <= 0n) {
+      throw new ScheduleError('condition.limit must be a positive integer in base units', 400);
+    }
+    return { conditionType: 'balance', conditionOperator: c.operator, conditionLimit: c.limit };
+  }
+  // type === 'timestamp'
+  if (c.operator !== undefined || c.limit !== undefined) {
+    throw new ScheduleError('condition: provide either a balance limit or a timestamp (at), not both', 400);
+  }
+  if (typeof c.at !== 'string' || Number.isNaN(new Date(c.at).getTime())) {
+    throw new ScheduleError('condition.at must be a valid ISO date', 400);
+  }
+  return { conditionType: 'timestamp', conditionAt: new Date(c.at) };
+}
+
+/** Rebuild the structured condition from the flat doc fields. */
+function docCondition(doc: InstanceType<typeof ScheduledTransaction>): ScheduleCondition | undefined {
+  switch (doc.conditionType) {
+    case 'balance':
+      return {
+        type: 'balance',
+        operator: doc.conditionOperator as BalanceConditionOperator,
+        limit: doc.conditionLimit as string,
+      };
+    case 'timestamp':
+      return { type: 'timestamp', at: doc.conditionAt as Date };
+    default:
+      return undefined;
+  }
 }
 
 async function validateRecipientAddresses(coin: string, recipients: Recipient[]): Promise<void> {
@@ -81,6 +155,7 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
   if (!isValidTimezone(input.timezone)) {
     throw new ScheduleError(`invalid IANA timezone: ${input.timezone}`, 400);
   }
+  const condition = normalizeCondition(input.condition);
   await validateRecipientAddresses(input.coin, recipients);
 
   const startAt = input.startAt ? new Date(input.startAt) : undefined;
@@ -96,6 +171,7 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
     destinationAddress: recipients[0].address,
     amount: sumAmounts(recipients),
     recipients,
+    tokenName: input.tokenName || undefined,
     frequency: input.frequency,
     startAt,
     endAt,
@@ -107,6 +183,7 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
     lastRunAt: null,
     consecutiveDefaultedCount: 0,
     lastReminderSentForRunAt: null,
+    ...condition,
   });
 
   logger.info({ scheduleId: doc._id.toString(), userId: input.userId, walletId: input.walletId }, 'schedule created');
@@ -160,6 +237,7 @@ export async function updateSchedule(
     endAt?: string | null;
     note?: string;
     reminderOffsetMs?: number;
+    condition?: ScheduleConditionInput | null;
   },
 ): Promise<ScheduleRecord> {
   const schedule = await getSchedule(userId, id);
@@ -220,6 +298,18 @@ export async function updateSchedule(
   }
   if (patch.reminderOffsetMs !== undefined) {
     changes.reminderOffsetMs = Math.max(patch.reminderOffsetMs, env.minReminderOffsetMs);
+  }
+  if (patch.condition !== undefined) {
+    if (patch.condition === null) {
+      // Explicit clear: the schedule loses its trigger condition.
+      changes.conditionType = null;
+      changes.conditionOperator = null;
+      changes.conditionLimit = null;
+      changes.conditionAt = null;
+    } else {
+      // Same mutual-exclusivity + field validation as creation.
+      Object.assign(changes, normalizeCondition(patch.condition));
+    }
   }
 
   const effective = { ...schedule, ...changes };

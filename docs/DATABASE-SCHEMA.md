@@ -21,6 +21,10 @@ The standing instruction ("from this wallet, send this amount to this address, t
 | `timezone` | string | IANA zone; `nextRunAt` computed in this zone |
 | `note` | string? | |
 | `reminderOffsetMs` | number | default 24 h, min 1 h (FR-14) |
+| `conditionType` | enum `balance, timestamp`? | trigger condition variant — exactly one of balance/timestamp per schedule |
+| `conditionOperator` | enum `above, below, equals`? | present when `conditionType: 'balance'`; compares spendable balance |
+| `conditionLimit` | string? | **base units as string**; balance trigger threshold |
+| `conditionAt` | Date? | timestamp trigger; occurrence cannot fire before it |
 | `status` | enum `active, paused, cancelled, completed` | |
 | `nextRunAt` | Date? | indexed; `null` → completed |
 | `lastRunAt` | Date? | |
@@ -40,8 +44,9 @@ One row per concrete occurrence of a schedule.
 | `scheduleId` | ObjectId → scheduledTransactions | |
 | `scheduledFor` | Date | when this occurrence was due |
 | `status` | enum `scheduled, claimed, executed, defaulted, pending_approval, failed, confirmed` | |
-| `reason` | string? | e.g. `INSUFFICIENT_BALANCE` |
-| `balanceSnapshot` | `{ spendable, maximumSpendable }`? | captured at precheck (US-6) |
+| `reason` | string? | e.g. `INSUFFICIENT_BALANCE`, `BALANCE_CONDITION_NOT_MET` |
+| `txRequestId` | string? | BitGo txrequest created for the occurrence (indexed); poller tracks it until broadcast |
+| `walletId` | string? | denormalized from the schedule for the txrequest poller |
 | `txid` | string? | set on `executed` |
 | `pendingApprovalId` | string? | set on `pending_approval` |
 | `attempt` | number | retry counter |

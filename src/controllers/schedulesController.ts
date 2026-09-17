@@ -39,6 +39,7 @@ export async function createScheduleHandler(req: Request, res: Response) {
     coin: body.coin,
     destinationAddress: body.destinationAddress,
     amount: body.amount !== undefined && body.amount !== null ? String(body.amount) : undefined,
+    tokenName: body.tokenName || undefined,
     recipients: parseRecipientsBody(body.recipients),
     frequency: parseFrequency(body.frequency) ?? 'one_time',
     startAt: body.startAt,
@@ -46,6 +47,7 @@ export async function createScheduleHandler(req: Request, res: Response) {
     timezone: body.timezone ?? 'UTC',
     note: body.note,
     reminderOffsetMs: body.reminderOffsetMs,
+    condition: body.condition,
   });
   res.status(201).json({ data: schedule });
 }
@@ -75,6 +77,7 @@ export async function updateScheduleHandler(req: Request, res: Response) {
     endAt: body.endAt,
     note: body.note,
     reminderOffsetMs: body.reminderOffsetMs,
+    condition: body.condition,
   });
   res.json({ data: schedule });
 }
