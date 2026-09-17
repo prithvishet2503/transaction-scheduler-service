@@ -1,8 +1,16 @@
 import { Schema, model, Types } from 'mongoose';
-import type { BalanceConditionOperator, Frequency, Recipient, ScheduleStatus } from '../types';
+import type {
+  BalanceConditionOperator,
+  Frequency,
+  Recipient,
+  ScheduleKind,
+  ScheduleStatus,
+} from '../types';
 
 export interface ScheduledTransactionDoc {
   _id: Types.ObjectId;
+  /** 'payment' — the original scheduled payment; 'fee-address-funding' — gas-tank auto-funding. */
+  kind: ScheduleKind;
   userId: string;
   enterpriseId?: string;
   walletId: string;
@@ -22,6 +30,11 @@ export interface ScheduledTransactionDoc {
   lastRunAt?: Date | null;
   consecutiveDefaultedCount: number;
   lastReminderSentForRunAt?: Date | null;
+  // Fee-address funding (kind 'fee-address-funding') monitor state.
+  emailOnDefault?: boolean;
+  lastBalance?: string | null;
+  lastCheckAt?: Date | null;
+  lastFundedAt?: Date | null;
   // Trigger condition (mutually exclusive variants), stored flat:
   // 'balance' → conditionOperator + conditionLimit; 'timestamp' → conditionAt.
   conditionType?: 'balance' | 'timestamp';
@@ -34,6 +47,12 @@ export interface ScheduledTransactionDoc {
 
 const scheduledTransactionSchema = new Schema<ScheduledTransactionDoc>(
   {
+    kind: {
+      type: String,
+      enum: ['payment', 'fee-address-funding'],
+      default: 'payment',
+      required: true,
+    },
     userId: { type: String, required: true, index: true },
     enterpriseId: { type: String },
     walletId: { type: String, required: true, index: true },
@@ -75,12 +94,19 @@ const scheduledTransactionSchema = new Schema<ScheduledTransactionDoc>(
     conditionLimit: { type: String },
     conditionAt: { type: Date },
     lastReminderSentForRunAt: { type: Date },
+    emailOnDefault: { type: Boolean, default: true },
+    lastBalance: { type: String, default: null },
+    lastCheckAt: { type: Date, default: null },
+    lastFundedAt: { type: Date, default: null },
   },
   { timestamps: true, collection: 'scheduledTransactions' },
 );
 
-// Compound index for the worker's due-schedule scan.
+// Compound index for the worker's due-schedule scan (payments only —
+// fee-address fundings are monitor-driven, never occurrence-driven).
 scheduledTransactionSchema.index({ status: 1, nextRunAt: 1 });
+// Fee-address monitor hot path.
+scheduledTransactionSchema.index({ kind: 1, status: 1, enterpriseId: 1, coin: 1 });
 
 export const ScheduledTransaction = model<ScheduledTransactionDoc>(
   'ScheduledTransaction',

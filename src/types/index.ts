@@ -2,6 +2,9 @@
 
 export type Frequency = 'one_time' | 'daily' | 'weekly' | 'monthly';
 
+/** Discriminator between the two schedule kinds sharing one collection. */
+export type ScheduleKind = 'payment' | 'fee-address-funding';
+
 export type ScheduleStatus = 'active' | 'paused' | 'cancelled' | 'completed';
 
 export type ExecutionStatus =
@@ -65,7 +68,27 @@ export interface ScheduleInput {
   condition?: ScheduleConditionInput;
 }
 
+export interface FeeAddressFundingRecord {
+  id: string;
+  userId: string;
+  enterpriseId?: string;
+  coin: string;
+  feeAddress: string;
+  fromWalletId: string;
+  thresholdAmount: string;
+  topUpAmount: string;
+  emailOnDefault: boolean;
+  status: ScheduleStatus;
+  lastBalance: string | null;
+  lastCheckAt: Date | null;
+  lastFundedAt: Date | null;
+  consecutiveDefaultedCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ScheduleRecord {
+  kind: ScheduleKind;
   id: string;
   userId: string;
   enterpriseId?: string;
@@ -81,6 +104,10 @@ export interface ScheduleRecord {
   note?: string;
   reminderOffsetMs: number;
   condition?: ScheduleCondition;
+  emailOnDefault?: boolean;
+  lastBalance?: string | null;
+  lastCheckAt?: Date | null;
+  lastFundedAt?: Date | null;
   status: ScheduleStatus;
   nextRunAt: Date | null;
   lastRunAt?: Date | null;

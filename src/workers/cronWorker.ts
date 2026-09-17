@@ -28,6 +28,7 @@ async function tick(): Promise<void> {
   await pollTransferConfirmations().catch((err) => logger.error({ err }, 'transfer confirmation poll failed'));
   const now = new Date();
   const dueSchedules = await ScheduledTransaction.find({
+    kind: 'payment',
     status: 'active',
     nextRunAt: { $lte: now },
     $or: [{ endAt: null }, { endAt: { $gte: now } }],

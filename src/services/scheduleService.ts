@@ -32,6 +32,7 @@ export class ScheduleError extends Error {
 export function toRecord(doc: InstanceType<typeof ScheduledTransaction>): ScheduleRecord {
   const recipients = recipientsFromSchedule(doc);
   return {
+    kind: doc.kind ?? 'payment',
     id: doc._id.toString(),
     userId: doc.userId,
     enterpriseId: doc.enterpriseId,
@@ -53,6 +54,10 @@ export function toRecord(doc: InstanceType<typeof ScheduledTransaction>): Schedu
     lastRunAt: doc.lastRunAt,
     consecutiveDefaultedCount: doc.consecutiveDefaultedCount,
     lastReminderSentForRunAt: doc.lastReminderSentForRunAt,
+    emailOnDefault: doc.emailOnDefault,
+    lastBalance: doc.lastBalance,
+    lastCheckAt: doc.lastCheckAt,
+    lastFundedAt: doc.lastFundedAt,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   };
@@ -176,6 +181,7 @@ export async function createSchedule(input: ScheduleInput): Promise<ScheduleReco
 
   // FR-4: schedule creation never checks balance — zero-balance wallets are accepted.
   const doc = await ScheduledTransaction.create({
+    kind: 'payment',
     userId: input.userId,
     enterpriseId: input.enterpriseId,
     walletId: input.walletId,

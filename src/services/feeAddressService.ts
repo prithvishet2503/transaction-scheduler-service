@@ -1,24 +1,11 @@
 import { Types } from 'mongoose';
-import { FeeAddressFunding, type FeeAddressFundingDoc } from '../models/FeeAddressFunding';
+import { ScheduledTransaction } from '../models/ScheduledTransaction';
 import { FeeAddressFundingExecution } from '../models/FeeAddressFundingExecution';
 import { bitgoClient } from './bitgoClient';
 import { notify } from './notificationService';
 import { env } from '../config/env';
+import type { FeeAddressFundingRecord } from '../types';
 import { logger } from '../utils/logger';
-
-export class FeeAddressError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-export interface FeeAddressBalance {
-  balance: string; // base units
-  address: string;
-}
 
 /** BitGo API base URL for the configured env (test → app.bitgo-test.com). */
 export function bitgoApiBaseUrl(): string {
@@ -33,9 +20,9 @@ export async function getFeeAddressBalance(enterpriseId: string, coin: string): 
   const url = `${bitgoApiBaseUrl()}/api/v2/${coin}/enterprise/${enterpriseId}/feeAddressBalance`;
   const res = await fetch(url, {
     headers: {
-    accept: 'application/json',
-    authorization: `Bearer ${env.bitgoTestAccessToken}`,
-  },
+      accept: 'application/json',
+      authorization: `Bearer ${env.bitgoTestAccessToken}`,
+    },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -52,6 +39,44 @@ export async function getFeeAddressBalance(enterpriseId: string, coin: string): 
   return { balance: String(data.balance), address: data.address };
 }
 
+export interface FeeAddressBalance {
+  balance: string;
+  address: string;
+}
+
+export class FeeAddressError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+/** funding doc = ScheduledTransaction with kind 'fee-address-funding'. */
+type FundingDoc = InstanceType<typeof ScheduledTransaction>;
+
+function toRecord(doc: FundingDoc) {
+  return {
+    id: doc._id.toString(),
+    userId: doc.userId,
+    enterpriseId: doc.enterpriseId,
+    coin: doc.coin,
+    feeAddress: doc.destinationAddress,
+    fromWalletId: doc.walletId,
+    thresholdAmount: doc.conditionLimit ?? '',
+    topUpAmount: doc.amount,
+    emailOnDefault: doc.emailOnDefault ?? true,
+    status: doc.status,
+    lastBalance: doc.lastBalance ?? null,
+    lastCheckAt: doc.lastCheckAt ?? null,
+    lastFundedAt: doc.lastFundedAt ?? null,
+    consecutiveDefaultedCount: doc.consecutiveDefaultedCount ?? 0,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
 export interface CreateFundingInput {
   userId: string;
   enterpriseId: string;
@@ -62,30 +87,11 @@ export interface CreateFundingInput {
   emailOnDefault?: boolean;
 }
 
-function toRecord(doc: InstanceType<typeof FeeAddressFunding>) {
-  return {
-    id: doc._id.toString(),
-    userId: doc.userId,
-    enterpriseId: doc.enterpriseId,
-    coin: doc.coin,
-    feeAddress: doc.feeAddress,
-    fromWalletId: doc.fromWalletId,
-    thresholdAmount: doc.thresholdAmount,
-    topUpAmount: doc.topUpAmount,
-    emailOnDefault: doc.emailOnDefault,
-    status: doc.status,
-    lastBalance: doc.lastBalance,
-    lastCheckAt: doc.lastCheckAt,
-    lastFundedAt: doc.lastFundedAt,
-    consecutiveDefaultedCount: doc.consecutiveDefaultedCount,
-    createdAt: doc.createdAt,
-    updatedAt: doc.updatedAt,
-  };
-}
-
 /**
  * Create a fee-address funding schedule. Resolves the fee address from the
  * enterprise gas-tank API so the caller never supplies it manually.
+ * Stored in the unified scheduledTransactions collection (kind
+ * 'fee-address-funding'); execution is monitor-driven, not occurrence-driven.
  */
 export async function createFunding(input: CreateFundingInput) {
   if (!input.enterpriseId || !input.coin || !input.fromWalletId) {
@@ -95,14 +101,38 @@ export async function createFunding(input: CreateFundingInput) {
     throw new FeeAddressError('thresholdAmount and topUpAmount must be positive (base units)', 400);
   }
   const { address } = await getFeeAddressBalance(input.enterpriseId, input.coin);
-  const doc = await FeeAddressFunding.create({
+
+  // One active funding per user + coin + fee address.
+  const duplicate = await ScheduledTransaction.findOne({
+    kind: 'fee-address-funding',
+    userId: input.userId,
+    coin: input.coin,
+    destinationAddress: address,
+    status: 'active',
+  });
+  if (duplicate) {
+    throw new FeeAddressError(
+      'an active funding already exists for this fee address',
+      409,
+    );
+  }
+
+  const doc = await ScheduledTransaction.create({
+    kind: 'fee-address-funding',
     userId: input.userId,
     enterpriseId: input.enterpriseId,
     coin: input.coin,
-    feeAddress: address,
-    fromWalletId: input.fromWalletId,
-    thresholdAmount: input.thresholdAmount,
-    topUpAmount: input.topUpAmount,
+    walletId: input.fromWalletId,
+    destinationAddress: address,
+    amount: input.topUpAmount,
+    // The funding trigger is a balance condition: fund whenever the fee
+    // address balance falls below the threshold. Monitor-driven — the
+    // occurrence worker ignores these documents (nextRunAt is null).
+    conditionType: 'balance',
+    conditionOperator: 'below',
+    conditionLimit: input.thresholdAmount,
+    frequency: 'one_time',
+    nextRunAt: null,
     emailOnDefault: input.emailOnDefault ?? true,
     status: 'active',
     lastBalance: null,
@@ -119,11 +149,11 @@ export async function createFunding(input: CreateFundingInput) {
 
 export async function listFundings(userId: string, opts: { status?: string; limit?: number } = {}) {
   const limit = Math.min(opts.limit ?? 50, 200);
-  const query: Record<string, unknown> = { userId };
+  const query: Record<string, unknown> = { kind: 'fee-address-funding', userId };
   if (opts.status) {
     query.status = opts.status;
   }
-  const docs = await FeeAddressFunding.find(query as never).sort({ createdAt: -1 }).limit(limit);
+  const docs = await ScheduledTransaction.find(query as never).sort({ createdAt: -1 }).limit(limit);
   return docs.map(toRecord);
 }
 
@@ -131,15 +161,19 @@ export async function getFunding(userId: string, id: string) {
   if (!Types.ObjectId.isValid(id)) {
     throw new FeeAddressError('invalid funding id', 400);
   }
-  const doc = await FeeAddressFunding.findOne({ _id: id, userId });
+  const doc = await ScheduledTransaction.findOne({ _id: id, userId, kind: 'fee-address-funding' });
   if (!doc) {
     throw new FeeAddressError('funding not found', 404);
   }
   return toRecord(doc);
 }
 
-export async function setFundingStatus(userId: string, id: string, status: FeeAddressFundingDoc['status']) {
-  const doc = await FeeAddressFunding.findOneAndUpdate({ _id: id, userId }, { $set: { status } }, { new: true });
+export async function setFundingStatus(userId: string, id: string, status: 'active' | 'paused' | 'cancelled') {
+  const doc = await ScheduledTransaction.findOneAndUpdate(
+    { _id: id, userId, kind: 'fee-address-funding' },
+    { $set: { status } },
+    { new: true },
+  );
   if (!doc) {
     throw new FeeAddressError('funding not found', 404);
   }
@@ -161,8 +195,8 @@ export async function listFundingExecutions(userId: string, fundingId: string) {
  * whose balance is below its threshold.
  */
 export async function monitorFeeAddresses(): Promise<{ checked: number; funded: number; defaulted: number }> {
-  const active = await FeeAddressFunding.find({ status: 'active' });
-  const byPair = new Map<string, Array<InstanceType<typeof FeeAddressFunding>>>();
+  const active = await ScheduledTransaction.find({ kind: 'fee-address-funding', status: 'active' });
+  const byPair = new Map<string, FundingDoc[]>();
   for (const f of active) {
     const key = `${f.enterpriseId}:${f.coin}`;
     const arr = byPair.get(key) ?? [];
@@ -191,9 +225,9 @@ export async function monitorFeeAddresses(): Promise<{ checked: number; funded: 
   return { checked: active.length, funded, defaulted };
 }
 
-async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, balance: string): Promise<'ok' | 'funded' | 'defaulted'> {
+async function evaluateFunding(funding: FundingDoc, balance: string): Promise<'ok' | 'funded' | 'defaulted'> {
   // Track balance reduction for observability.
-  if (funding.lastBalance !== null && BigInt(balance) < BigInt(funding.lastBalance)) {
+  if (funding.lastBalance != null && BigInt(balance) < BigInt(funding.lastBalance)) {
     logger.info(
       { fundingId: funding._id.toString(), lastBalance: funding.lastBalance, balance },
       'fee address balance decreased',
@@ -203,7 +237,7 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
   funding.lastCheckAt = new Date();
   await funding.save();
 
-  if (BigInt(balance) >= BigInt(funding.thresholdAmount)) {
+  if (BigInt(balance) >= BigInt(funding.conditionLimit ?? '0')) {
     return 'ok';
   }
 
@@ -211,9 +245,9 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
   try {
     const result = await bitgoClient.sendMany({
       coin: funding.coin,
-      walletId: funding.fromWalletId,
-      address: funding.feeAddress,
-      amount: funding.topUpAmount,
+      walletId: funding.walletId,
+      address: funding.destinationAddress,
+      amount: funding.amount,
       sequenceId: `fee-fund:${funding._id.toString()}:${Date.now()}`,
       comment: `fee-address top-up:${funding._id.toString()}`,
     });
@@ -224,15 +258,14 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
     await FeeAddressFundingExecution.create({
       fundingId: funding._id,
       status: pendingApprovalId ? 'pending_approval' : 'executed',
-      amount: funding.topUpAmount,
+      amount: funding.amount,
       balanceAtCheck: balance,
       txid: result?.txid,
       pendingApprovalId,
     });
     funding.lastFundedAt = new Date();
-    funding.consecutiveDefaultedCount = 0;
     await funding.save();
-    logger.info({ fundingId: funding._id.toString(), amount: funding.topUpAmount }, 'fee address funded');
+    logger.info({ fundingId: funding._id.toString(), amount: funding.amount }, 'fee address funded');
     return 'funded';
   } catch (err) {
     const code = (err as { code?: string })?.code;
@@ -242,7 +275,7 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
       await FeeAddressFundingExecution.create({
         fundingId: funding._id,
         status: 'defaulted',
-        amount: funding.topUpAmount,
+        amount: funding.amount,
         balanceAtCheck: balance,
         reason: 'INSUFFICIENT_BALANCE',
       });
@@ -251,10 +284,10 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
           type: 'defaulted',
           userId: funding.userId,
           scheduleId: funding._id.toString(),
-          walletId: funding.fromWalletId,
+          walletId: funding.walletId,
           coin: funding.coin,
-          destinationAddress: funding.feeAddress,
-          amount: funding.topUpAmount,
+          destinationAddress: funding.destinationAddress,
+          amount: funding.amount,
           reason: 'INSUFFICIENT_BALANCE',
           idempotencyKey: `fee-fund:${funding._id.toString()}:${Date.now()}:defaulted`,
         });
@@ -266,7 +299,7 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
     await FeeAddressFundingExecution.create({
       fundingId: funding._id,
       status: 'failed',
-      amount: funding.topUpAmount,
+      amount: funding.amount,
       balanceAtCheck: balance,
       reason: (err as Error)?.message ?? 'UNKNOWN',
     });
