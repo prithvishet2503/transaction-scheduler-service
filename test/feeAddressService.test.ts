@@ -43,7 +43,6 @@ function fakeFunding(overrides: Record<string, unknown> = {}) {
     fromWalletId: 'w1',
     thresholdAmount: '500000000000000000',
     topUpAmount: '1000000000000000000',
-    frequency: 'one_time',
     emailOnDefault: true,
     status: 'active',
     lastBalance: null,
@@ -115,11 +114,10 @@ describe('createFunding', () => {
       fromWalletId: 'w1',
       thresholdAmount: '500000000000000000',
       topUpAmount: '1000000000000000000',
-      frequency: 'weekly',
     });
     expect(funding.feeAddress).toBe('0xfeefee');
     expect(mCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ feeAddress: '0xfeefee', fromWalletId: 'w1', frequency: 'weekly' }),
+      expect.objectContaining({ feeAddress: '0xfeefee', fromWalletId: 'w1' }),
     );
   });
 });

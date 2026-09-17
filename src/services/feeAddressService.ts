@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { FeeAddressFunding, type FeeAddressFundingDoc, type FundingFrequency } from '../models/FeeAddressFunding';
+import { FeeAddressFunding, type FeeAddressFundingDoc } from '../models/FeeAddressFunding';
 import { FeeAddressFundingExecution } from '../models/FeeAddressFundingExecution';
 import { bitgoClient } from './bitgoClient';
 import { notify } from './notificationService';
@@ -56,7 +56,6 @@ export interface CreateFundingInput {
   fromWalletId: string;
   thresholdAmount: string;
   topUpAmount: string;
-  frequency?: FundingFrequency;
   emailOnDefault?: boolean;
 }
 
@@ -70,7 +69,6 @@ function toRecord(doc: InstanceType<typeof FeeAddressFunding>) {
     fromWalletId: doc.fromWalletId,
     thresholdAmount: doc.thresholdAmount,
     topUpAmount: doc.topUpAmount,
-    frequency: doc.frequency,
     emailOnDefault: doc.emailOnDefault,
     status: doc.status,
     lastBalance: doc.lastBalance,
@@ -93,9 +91,6 @@ export async function createFunding(input: CreateFundingInput) {
   if (BigInt(input.thresholdAmount) <= 0n || BigInt(input.topUpAmount) <= 0n) {
     throw new FeeAddressError('thresholdAmount and topUpAmount must be positive (base units)', 400);
   }
-  if (!['one_time', 'daily', 'weekly', 'monthly'].includes(input.frequency ?? 'one_time')) {
-    throw new FeeAddressError('invalid frequency', 400);
-  }
   const { address } = await getFeeAddressBalance(input.enterpriseId, input.coin);
   const doc = await FeeAddressFunding.create({
     userId: input.userId,
@@ -105,7 +100,6 @@ export async function createFunding(input: CreateFundingInput) {
     fromWalletId: input.fromWalletId,
     thresholdAmount: input.thresholdAmount,
     topUpAmount: input.topUpAmount,
-    frequency: input.frequency ?? 'one_time',
     emailOnDefault: input.emailOnDefault ?? true,
     status: 'active',
     lastBalance: null,
@@ -234,9 +228,6 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
     });
     funding.lastFundedAt = new Date();
     funding.consecutiveDefaultedCount = 0;
-    if (funding.frequency === 'one_time') {
-      funding.status = 'completed';
-    }
     await funding.save();
     logger.info({ fundingId: funding._id.toString(), amount: funding.topUpAmount }, 'fee address funded');
     return 'funded';

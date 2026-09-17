@@ -1,6 +1,5 @@
 import { Schema, model, Types } from 'mongoose';
 
-export type FundingFrequency = 'one_time' | 'daily' | 'weekly' | 'monthly';
 export type FundingStatus = 'active' | 'paused' | 'cancelled' | 'completed';
 
 export interface FeeAddressFundingDoc {
@@ -12,7 +11,6 @@ export interface FeeAddressFundingDoc {
   fromWalletId: string; // custodial wallet funding it (from)
   thresholdAmount: string; // base units; fund when fee-address balance < this
   topUpAmount: string; // base units; amount sent on each funding
-  frequency: FundingFrequency;
   emailOnDefault: boolean;
   status: FundingStatus;
   lastBalance: string | null;
@@ -32,12 +30,6 @@ const feeAddressFundingSchema = new Schema<FeeAddressFundingDoc>(
     fromWalletId: { type: String, required: true, index: true },
     thresholdAmount: { type: String, required: true },
     topUpAmount: { type: String, required: true },
-    frequency: {
-      type: String,
-      required: true,
-      default: 'one_time',
-      enum: ['one_time', 'daily', 'weekly', 'monthly'],
-    },
     emailOnDefault: { type: Boolean, default: true },
     status: {
       type: String,

@@ -31,7 +31,6 @@ export async function createFundingHandler(req: Request, res: Response) {
     fromWalletId: body.fromWalletId,
     thresholdAmount: String(body.thresholdAmount),
     topUpAmount: String(body.topUpAmount),
-    frequency: body.frequency,
     emailOnDefault: body.emailOnDefault,
   });
   res.status(201).json({ data: funding });
