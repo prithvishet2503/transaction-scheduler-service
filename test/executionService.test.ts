@@ -14,11 +14,13 @@ vi.mock('../src/models/ScheduleExecution', () => ({
 const mCheckBalance = vi.fn();
 const mCreateTxRequest = vi.fn();
 const mFetchLatestTxRequest = vi.fn();
+const mGetTransferStatus = vi.fn();
 vi.mock('../src/services/bitgoClient', () => ({
   bitgoClient: {
     checkBalance: (...a: unknown[]) => mCheckBalance(...a),
     createTxRequest: (...a: unknown[]) => mCreateTxRequest(...a),
     fetchLatestTxRequest: (...a: unknown[]) => mFetchLatestTxRequest(...a),
+    getTransferStatus: (...a: unknown[]) => mGetTransferStatus(...a),
   },
 }));
 
@@ -28,7 +30,11 @@ vi.mock('../src/services/notificationService', () => ({
 }));
 
 // eslint-disable-next-line import/first
-import { pollPendingTxRequests, processDueSchedule } from '../src/services/executionService';
+import {
+  pollPendingTxRequests,
+  pollTransferConfirmations,
+  processDueSchedule,
+} from '../src/services/executionService';
 
 function fakeSchedule() {
   const schedule: Record<string, unknown> = {
@@ -269,5 +275,41 @@ describe('pollPendingTxRequests', () => {
     } finally {
       delete process.env.TX_REQUEST_STATUS_REFRESH_MS;
     }
+  });
+
+  it('marks the execution confirmed when the transfer confirms on-chain', async () => {
+    mFind.mockResolvedValue([
+      {
+        _id: { toString: () => 'exec_13' },
+        walletId: 'w1',
+        coin: 'hteth',
+        txid: '0xconf',
+        status: 'executed',
+      },
+    ]);
+    mGetTransferStatus.mockResolvedValue({ state: 'confirmed', confirmations: 12 });
+
+    await pollTransferConfirmations();
+
+    expect(mGetTransferStatus).toHaveBeenCalledWith('hteth', 'w1', '0xconf');
+    const call = mUpdateOne.mock.calls[0];
+    expect(call[1].$set.status).toBe('confirmed');
+  });
+
+  it('leaves executed executions alone while the transfer is unconfirmed', async () => {
+    mFind.mockResolvedValue([
+      {
+        _id: { toString: () => 'exec_14' },
+        walletId: 'w1',
+        coin: 'hteth',
+        txid: '0xpunconfirmed',
+        status: 'executed',
+      },
+    ]);
+    mGetTransferStatus.mockResolvedValue({ state: 'pendingConfirmation', confirmations: 0 });
+
+    await pollTransferConfirmations();
+
+    expect(mUpdateOne).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,12 @@ import { ScheduledTransaction } from '../models/ScheduledTransaction';
 import { connectDb, disconnectDb } from '../utils/db';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
-import { pollPendingTxRequests, processDueSchedule, sendReminderIfDue } from '../services/executionService';
+import {
+  pollPendingTxRequests,
+  pollTransferConfirmations,
+  processDueSchedule,
+  sendReminderIfDue,
+} from '../services/executionService';
 
 const workerId = `${process.env.HOSTNAME ?? 'localhost'}:${process.pid}`;
 let shuttingDown = false;
@@ -20,6 +25,7 @@ let shuttingDown = false;
 async function tick(): Promise<void> {
   // Advance in-flight txrequests (created on earlier ticks) first.
   await pollPendingTxRequests().catch((err) => logger.error({ err }, 'txrequest poll failed'));
+  await pollTransferConfirmations().catch((err) => logger.error({ err }, 'transfer confirmation poll failed'));
   const now = new Date();
   const dueSchedules = await ScheduledTransaction.find({
     status: 'active',

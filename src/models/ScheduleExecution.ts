@@ -9,6 +9,7 @@ export interface ScheduleExecutionDoc {
   reason?: string;
   balanceSnapshot?: { spendable: string; maximumSpendable: string | null };
   txid?: string;
+  coin?: string; // denormalized for confirmation polling
   txRequestId?: string; // BitGo txrequest created for this occurrence
   walletId?: string; // denormalized for the txrequest poller
   txRequestLastPolledAt?: Date; // last fetch of the txrequest status
@@ -53,6 +54,7 @@ const scheduleExecutionSchema = new Schema<ScheduleExecutionDoc>(
     txid: { type: String, index: true },
     pendingApprovalId: { type: String },
     txRequestId: { type: String, index: true },
+    coin: { type: String },
     walletId: { type: String },
     txRequestLastPolledAt: { type: Date },
     attempt: { type: Number, default: 0 },

@@ -298,6 +298,22 @@ export class BitGoClient {
         .filter((h): h is string => typeof h === 'string' && h.length > 0),
     };
   }
+
+  /** On-chain state of a broadcast transfer (used by confirmation polling). */
+  async getTransferStatus(
+    coin: string,
+    walletId: string,
+    txId: string,
+  ): Promise<{ state: string; confirmations: number }> {
+    const res = await this.api<{
+      transfer?: { state?: string; confirmations?: { count?: number } | number };
+    }>('GET', `/api/v2/${coin}/wallet/${walletId}/transfer/${txId}`);
+    const transfer = res.transfer ?? {};
+    const raw = transfer.confirmations;
+    const confirmations =
+      typeof raw === 'number' ? raw : (raw?.count ?? 0);
+    return { state: transfer.state ?? 'unknown', confirmations };
+  }
 }
 
 export const bitgoClient = new BitGoClient();

@@ -302,7 +302,7 @@ export async function processDueSchedule(
     // Broadcast submitted; settlement is async — 'confirmed' arrives via webhook (FR-8).
     await ScheduleExecution.updateOne(
       { _id: claimed._id },
-      { $set: { status: 'executed', txid, txRequestId, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
+      { $set: { status: 'executed', txid, txRequestId, coin: schedule.coin, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
     );
     schedule.consecutiveDefaultedCount = 0;
     schedule.lastRunAt = scheduledFor;
@@ -318,7 +318,7 @@ export async function processDueSchedule(
   // The tick-driven poller (pollPendingTxRequests) advances the document later.
   await ScheduleExecution.updateOne(
     { _id: claimed._id },
-    { $set: { status: 'pending_approval', txRequestId, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
+    { $set: { status: 'pending_approval', txRequestId, coin: schedule.coin, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
   );
   schedule.lastRunAt = scheduledFor;
   await advanceSchedule(schedule);
@@ -329,10 +329,11 @@ export async function processDueSchedule(
 }
 
 /**
- * Advance executions with an in-flight txrequest: each tick re-fetches the
- * latest txrequest version and moves the document forward — canceled →
- * failed, txHash seen → executed (+txid). 'confirmed' still arrives via the
- * transfer webhook (FR-8).
+ * Polling worker: each tick advances in-flight executions.
+ * 1. pending_approval + txRequestId → re-fetch the txrequest: canceled →
+ *    failed, txHash seen → executed (+txid).
+ * 2. executed + txid → check the on-chain transfer state; once BitGo reports
+ *    it confirmed, the execution becomes 'confirmed' (no webhook needed).
  */
 export async function pollPendingTxRequests(): Promise<void> {
   const inFlight = await ScheduleExecution.find({
@@ -377,11 +378,47 @@ export async function pollPendingTxRequests(): Promise<void> {
         { $set: { status: 'executed', txid, txRequestLastPolledAt: now } },
       );
       logger.info({ executionId: exec._id.toString(), txRequestId: exec.txRequestId, txid }, 'txrequest broadcast');
-    } else {
-      // Still in flight — record the fetch so the refresh interval is honored.
+      continue;
+    }
+    // Still in flight or already executed — record the poll either way.
+    await ScheduleExecution.updateOne(
+      { _id: exec._id },
+      { $set: { txRequestLastPolledAt: now } },
+    );
+  }
+}
+
+/**
+ * Poll on-chain confirmation for broadcast executions: an 'executed'
+ * execution whose transfer reaches state 'confirmed' becomes 'confirmed'
+ * (same outcome the transfer webhook produces, FR-8 — this covers demos
+ * without a webhook configured).
+ */
+export async function pollTransferConfirmations(): Promise<void> {
+  const executed = await ScheduleExecution.find({
+    status: 'executed',
+    txid: { $exists: true, $ne: null },
+    coin: { $exists: true, $ne: null },
+  }).limit(env.workerBatchSize);
+  for (const exec of executed) {
+    if (!exec.coin || !exec.walletId || !exec.txid) {
+      continue;
+    }
+    let transfer: { state?: string; confirmations?: number } | undefined;
+    try {
+      transfer = await bitgoClient.getTransferStatus(exec.coin, exec.walletId, exec.txid);
+    } catch (err) {
+      logger.warn({ executionId: exec._id.toString(), err }, 'transfer poll failed');
+      continue;
+    }
+    if (transfer?.state === 'confirmed') {
       await ScheduleExecution.updateOne(
         { _id: exec._id },
-        { $set: { txRequestLastPolledAt: now } },
+        { $set: { status: 'confirmed' } },
+      );
+      logger.info(
+        { executionId: exec._id.toString(), txid: exec.txid, confirmations: transfer.confirmations },
+        'transfer confirmed',
       );
     }
   }
