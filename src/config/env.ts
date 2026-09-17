@@ -55,8 +55,14 @@ export const env = {
   kafkaBrokers: (process.env.KAFKA_BROKERS ?? '').split(',').filter(Boolean),
   kafkaTopicPrefix: process.env.KAFKA_TOPIC_PREFIX ?? 'tx-scheduler',
 
-  // --- Webhook (BitGo transfer-confirmed → execution 'confirmed') ---
+// --- Webhook (BitGo transfer-confirmed → execution 'confirmed') ---
   webhookSecret: process.env.WEBHOOK_SECRET ?? 'dev-webhook-secret',
+
+  // --- Fee-address (gas tank) auto-funding ---
+  // How often the monitor polls active fee-address fundings (ms).
+  feeAddressPollIntervalMs: int(process.env.FEE_ADDRESS_POLL_INTERVAL_MS, 5 * 60_000),
+// Default threshold below which a funding is triggered (base units).
+  feeAddressDefaultThreshold: process.env.FEE_ADDRESS_DEFAULT_THRESHOLD ?? '50000000000000000000',
 } as const;
 
 export type Env = typeof env;
