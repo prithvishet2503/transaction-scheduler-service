@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: install build typecheck test test:watch run run-api run-worker run-reaper local-up local-down clean lint format
+.PHONY: install build typecheck test test-watch run run-api run-worker run-reaper local-up local-down clean lint format
 
 ## Install dependencies
 install:
@@ -18,7 +18,7 @@ typecheck:
 test:
 	npm test
 
-test:watch:
+test-watch:
 	npm run test:watch
 
 ## Lint / format

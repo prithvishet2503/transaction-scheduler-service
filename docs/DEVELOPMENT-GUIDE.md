@@ -23,17 +23,17 @@ make run-reaper             # reaper (re-arms stuck claims)
 
 ## Demo walkthrough (real testnet transaction)
 
-1. Create a testnet BTC hot wallet in BitGo test; copy its `walletId`, and the **passphrase** you set.
-2. Fund it with testnet BTC (a faucet) so the balance covers `amount + fee`.
-3. Set `BITGO_ACCESS_TOKEN`, `BITGO_WALLET_PASSPHRASE`, `COINS=tbtc` in `.env`.
+1. Create a testnet Base (Ethereum) hot wallet in BitGo test; copy its `walletId`, and the **passphrase** you set.
+2. Fund it with testnet Base ETH (a faucet) so the balance covers `amount + fee`.
+3. Set `BITGO_ACCESS_TOKEN`, `BITGO_WALLET_PASSPHRASE`, `COINS=tbaseeth` in `.env`.
 4. Start the API + worker.
 5. Create a **due** schedule (past `startAt`):
 
 ```bash
 curl -X POST localhost:3000/api/v1/schedules \
   -H "x-api-key: dev-api-key" -H "content-type: application/json" \
-  -d '{"walletId":"<walletId>","coin":"tbtc",
-       "destinationAddress":"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+  -d '{"walletId":"<walletId>","coin":"tbaseeth",
+       "destinationAddress":"0xde709f2102306220921060314715629080e2fb77",
        "amount":"50000","frequency":"daily","timezone":"UTC",
        "startAt":"2026-09-01T00:00:00Z"}'
 ```
@@ -55,7 +55,7 @@ curl -X POST localhost:3000/api/v1/worker/tick -H "x-api-key: dev-api-key"
 | Symptom | Cause / fix |
 |---------|-------------|
 | `EBADENGINE` warnings on install | Node < 22; switch to Node 22. Non-fatal for most paths but BTC signing may misbehave. |
-| `Coin or token type tbtc not supported` | Coin not registered — confirm `COINS=tbtc` and that `@bitgo/sdk-coin-btc` is installed. |
+| `Coin or token type tbaseeth not supported` | Coin not registered — confirm `COINS=tbaseeth` and that `@bitgo/sdk-coin-evm` is installed. |
 | Execution stuck `claimed` with a real token | BitGo API error (network/token); the reaper re-arms after the lease expires, or the token path pauses. Check logs for `insufficient_funds` / `invalidToken`. |
 | Schedule created but never executes | `nextRunAt` is in the future (computed from `startAt` + one period). Use a past `startAt` to make it due immediately. |
 | Real send fails with spend-limit/OTP | The token's spending limits must cover the schedule amount (OQ-6). |

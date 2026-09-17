@@ -21,6 +21,7 @@
   "dependencies": {
     "@bitgo/sdk-api": "^3.0.0",
     "@bitgo/sdk-coin-btc": "^2.14.0",
+    "@bitgo/sdk-coin-evm": "^1.15.38",
     "@bitgo/sdk-core": "^38.16.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

@@ -6,7 +6,7 @@ set -euo pipefail
 SERVICE="transaction-scheduler-service"
 REPO="${REPO:-bitgo/transaction-scheduler-service}"
 PORT="${PORT:-3000}"
-COINS="${COINS:-tbtc}"
+COINS="${COINS:-tbaseeth}"
 
 cat <<EOF
 {

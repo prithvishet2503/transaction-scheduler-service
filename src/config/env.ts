@@ -23,8 +23,8 @@ export const env = {
   // Wallet passphrase used to decrypt the user key share for signing.
   bitgoWalletPassphrase:
     process.env.BITGO_WALLET_PASSPHRASE ?? '<set-your-wallet-passphrase>',
-  // Comma-separated coin list the SDK should register (e.g. "tbtc,teth").
-  coins: (process.env.COINS ?? 'tbtc').split(',').filter(Boolean),
+  // Comma-separated coin list the SDK should register (e.g. "tbaseeth,tbtc").
+  coins: (process.env.COINS ?? 'tbaseeth').split(',').filter(Boolean),
 
   // --- Auth (demo: static API key, hardcoded) ---
   apiKey: process.env.API_KEY ?? 'dev-api-key',

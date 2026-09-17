@@ -60,8 +60,10 @@ export class BitGoClient {
   }
 
   /**
-   * Resolve the coin *class* (e.g. `Tbtc`) for a coin name. Per-coin SDK
-   * packages export one class per coin, each with its own `createInstance`.
+   * Resolve the coin *class* for a coin name. Per-coin SDK packages export
+   * one class per coin (each with `createInstance`). EVM-family coins
+   * (`tbaseeth`, `baseeth`, `teth`, `opeth`, ...) are all handled by the
+   * generic `EvmCoin` class from `@bitgo/sdk-coin-evm`.
    */
   private loadCoinClass(coinName: string): unknown {
     try {
@@ -70,6 +72,17 @@ export class BitGoClient {
           return require('@bitgo/sdk-coin-btc').Tbtc;
         case 'btc':
           return require('@bitgo/sdk-coin-btc').Btc;
+        case 'tbaseeth':
+        case 'baseeth':
+        case 'teth':
+        case 'eth':
+        case 'topeth':
+        case 'opeth':
+        case 'tarbeth':
+        case 'arbeth':
+        case 'tzketh':
+        case 'zketh':
+          return require('@bitgo/sdk-coin-evm').EvmCoin;
         default: {
           const bare = coinName.replace(/^t/, '');
           const className = bare.charAt(0).toUpperCase() + bare.slice(1);

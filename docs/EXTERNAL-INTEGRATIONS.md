@@ -10,14 +10,14 @@ Packages: `@bitgo/sdk-api` (client/auth), `@bitgo/sdk-core` (Wallet, wallets), `
 - **Demo:** the token is a long-lived, spend-scoped access token supplied in `.env` (hardcoded; no KMS). Production would source it from a secret manager. **Open item (OQ-1):** exact scope-string literals are server-defined and not discoverable in the SDK repo — provision with the wallet's `spend` permission.
 
 ### Coin registration
-Per-coin SDK packages export one class per coin, each with `createInstance`:
+Per-coin SDK packages export one class per coin, each with `createInstance`. EVM-family coins (`tbaseeth`, `baseeth`, `teth`, `opeth`, ...) are all handled by the generic `EvmCoin` class from `@bitgo/sdk-coin-evm`:
 ```ts
 import { BitGoAPI } from '@bitgo/sdk-api';
-import { Tbtc } from '@bitgo/sdk-coin-btc';
+import { EvmCoin } from '@bitgo/sdk-coin-evm';
 const bitgo = new BitGoAPI({ env: 'test', accessToken });
-bitgo.register('tbtc', Tbtc.createInstance);
+bitgo.register('tbaseeth', EvmCoin.createInstance);
 ```
-`src/services/bitgoClient.ts` resolves the coin class by name (`tbtc → Tbtc`, `btc → Btc`, general fallback).
+`src/services/bitgoClient.ts` resolves the coin class by name (`tbtc → Tbtc` from `@bitgo/sdk-coin-btc`, `tbaseeth → EvmCoin` from `@bitgo/sdk-coin-evm`, general fallback).
 
 ### Wallet & balance
 ```ts

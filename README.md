@@ -68,7 +68,7 @@ export KEY="x-api-key: dev-api-key"
 
 # Create a schedule (zero balance is fine)
 curl -X POST $API/schedules -H "$KEY" -H "content-type: application/json" \
-  -d '{"walletId":"<walletId>","coin":"tbtc","destinationAddress":"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",\
+  -d '{"walletId":"<walletId>","coin":"tbaseeth","destinationAddress":"0xde709f2102306220921060314715629080e2fb77",\
        "amount":"50000","frequency":"weekly","timezone":"UTC"}'
 
 # List schedules

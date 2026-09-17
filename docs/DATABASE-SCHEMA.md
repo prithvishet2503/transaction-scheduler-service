@@ -12,7 +12,7 @@ The standing instruction ("from this wallet, send this amount to this address, t
 | `userId` | string | owning user (indexed) |
 | `enterpriseId` | string? | |
 | `walletId` | string | BitGo wallet id (indexed) |
-| `coin` | string | e.g. `tbtc` |
+| `coin` | string | e.g. `tbaseeth` |
 | `destinationAddress` | string | validated per coin at create/edit |
 | `amount` | string | **base units as string** (avoids JS precision loss) |
 | `frequency` | enum `one_time, daily, weekly, monthly` | |

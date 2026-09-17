@@ -21,7 +21,7 @@ data:
   NODE_ENV: "development"
   PORT: "3000"
   BITGO_ENV: "test"
-  COINS: "tbtc"
+  COINS: "tbaseeth"
   WORKER_POLL_INTERVAL_MS: "30000"
   WORKER_LEASE_TTL_MS: "120000"
   WORKER_STUCK_CLAIM_MS: "900000"
