@@ -8,7 +8,7 @@ Standalone microservice implementing the recurring-payment PRD. Node/TS/Express/
 - **Scheduling:** 30 s claim-based Mongo poll + unique `{scheduleId, scheduledFor}` index + atomic `findOneAndUpdate` claim; reaper re-arms stuck claims. Exactly-once per occurrence with N replicas.
 - **Execution:** `wallet.sendMany` via BitGoJS; two-layer balance default (precheck `spendableBalanceString` + server `insufficient_funds`); `pending_approval` is first-class; `confirmed` via transfer webhook.
 - **Notifications:** self-contained sink (log + optional webhook/Kafka). NCC path documented for prod.
-- **Coin registration:** per-coin class resolved by name (`tbaseeth → Eth`, `tbtc → Tbtc`); validated live against testnet.
+- **Coin registration:** per-coin class resolved by name (`tbaseeth → EvmCoin` from `@bitgo/sdk-coin-evm`, `tbtc → Tbtc`); validated live against testnet.
 
 ## Verification
 - `make typecheck` ✓, `make test` (12 tests) ✓, `make build` ✓.
