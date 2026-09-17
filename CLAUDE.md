@@ -47,5 +47,5 @@ make local-up/down  # local MongoDB stack
 ## Don't
 
 - Don't add Temporal/Bull/Agenda — scheduling is claim-based polling by design.
-- Don't store wallet passphrases in code; keep them in `.env` (demo) or a secret manager (prod).
+- Don't store wallet passphrases in code; keep them in `.env` (demo) or a secret manager (prod). Not required for custody wallets (BitGo holds the keys).
 - Don't block schedule creation on balance.

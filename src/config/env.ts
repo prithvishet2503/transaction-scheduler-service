@@ -21,8 +21,9 @@ export const env = {
   bitgoAccessToken:
     process.env.BITGO_ACCESS_TOKEN ?? '<set-your-testnet-access-token>',
   // Wallet passphrase used to decrypt the user key share for signing.
-  bitgoWalletPassphrase:
-    process.env.BITGO_WALLET_PASSPHRASE ?? '<set-your-wallet-passphrase>',
+  // NOT required for custody wallets (BitGo holds the keys) — only set it
+  // for self-custody/hot wallets.
+  bitgoWalletPassphrase: process.env.BITGO_WALLET_PASSPHRASE ?? '',
   // Comma-separated coin list the SDK should register (e.g. "tbaseeth,tbtc").
   coins: (process.env.COINS ?? 'tbaseeth').split(',').filter(Boolean),
 

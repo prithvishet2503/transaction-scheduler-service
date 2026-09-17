@@ -32,14 +32,15 @@ The SDK does **not** enforce funds client-side; the scheduler pre-checks (FR-10)
 ```ts
 const result = await wallet.sendMany({
   recipients: [{ address, amount }],   // amount in base units
-  walletPassphrase,                    // decrypts user key share
+  // walletPassphrase,                  // ONLY for self-custody/hot wallets —
+  //                                    // omitted for custody wallets (BitGo holds the keys)
   minConfirms,
   sequenceId,                          // idempotency
   comment,
 });
 // result.txid | result.pendingApprovalId | result.txRequestId
 ```
-Under the hood this runs prebuild → sign → submit against BitGo (`/api/v2/:coin/wallet/:id/tx/build`, `/tx/send`), through the same policy/approval path as a manual send.
+Under the hood this runs prebuild → sign → submit against BitGo (`/api/v2/:coin/wallet/:id/tx/build`, `/tx/send`), through the same policy/approval path as a manual send. For custody wallets BitGo signs with its key shares, so no `walletPassphrase` is needed.
 
 ## Notifications — NCC path
 

@@ -148,6 +148,10 @@ export class BitGoClient {
   /**
    * Create + submit a single-recipient transaction through the normal BitGo
    * pipeline. `sequenceId` makes retries idempotent (FR-6).
+   *
+   * For **custody wallets** BitGo holds the keys, so no user key share needs
+   * decrypting — `walletPassphrase` is only included when one is actually
+   * configured (not required).
    */
   async sendMany(params: {
     coin: string;
@@ -159,13 +163,22 @@ export class BitGoClient {
     comment?: string;
   }) {
     const wallet = await this.getWallet(params.coin, params.walletId);
-    return wallet.sendMany({
+    const options: {
+      recipients: { address: string; amount: string }[];
+      walletPassphrase?: string;
+      minConfirms: number;
+      sequenceId: string;
+      comment?: string;
+    } = {
       recipients: [{ address: params.address, amount: params.amount }],
-      walletPassphrase: env.bitgoWalletPassphrase,
       minConfirms: params.minConfirms ?? 0,
       sequenceId: params.sequenceId,
       comment: params.comment,
-    });
+    };
+    if (env.bitgoWalletPassphrase && !env.bitgoWalletPassphrase.startsWith('<set-')) {
+      options.walletPassphrase = env.bitgoWalletPassphrase;
+    }
+    return wallet.sendMany(options);
   }
 }
 

@@ -20,7 +20,7 @@ Implements the requirements in `PRD.md` (see [docs](./docs)).
 
 - **Node.js 22+** (BitGo SDK packages require `>=22`).
 - A running MongoDB (`make local-up` or a local `mongod`).
-- A BitGo **testnet** access token + a funded hot wallet + its passphrase for real sends.
+- A BitGo **testnet** access token + a funded wallet for real sends (a wallet **passphrase** is only needed for self-custody/hot wallets, not custody).
 
 ## Getting started
 
@@ -30,7 +30,7 @@ make install
 
 # 2. Configure secrets (testnet)
 cp .env.example .env
-#    edit .env: BITGO_ACCESS_TOKEN, BITGO_WALLET_PASSPHRASE, COINS
+#    edit .env: BITGO_ACCESS_TOKEN, COINS (BITGO_WALLET_PASSPHRASE only for hot wallets)
 
 # 3. Verify
 make typecheck
