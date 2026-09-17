@@ -38,11 +38,15 @@ export async function getFeeAddressBalance(enterpriseId: string, coin: string): 
     const body = await res.text().catch(() => '');
     throw new FeeAddressError(`fee address balance failed: ${res.status} ${body.slice(0, 200)}`, 502);
   }
-  const data = (await res.json()) as { balance?: string; address?: string };
-  if (typeof data.balance !== 'string' || typeof data.address !== 'string') {
+  const data = (await res.json()) as { balance?: string | number; address?: string };
+  if (
+    (typeof data.balance !== 'string' && typeof data.balance !== 'number') ||
+    typeof data.address !== 'string'
+  ) {
     throw new FeeAddressError('fee address balance response malformed', 502);
   }
-  return { balance: data.balance, address: data.address };
+  // BitGo may return balance as a JSON number for some coins; normalize to string.
+  return { balance: String(data.balance), address: data.address };
 }
 
 export interface CreateFundingInput {
