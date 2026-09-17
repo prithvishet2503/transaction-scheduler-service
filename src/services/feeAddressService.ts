@@ -269,6 +269,13 @@ async function evaluateFunding(funding: InstanceType<typeof FeeAddressFunding>, 
       return 'defaulted';
     }
     logger.error({ err, fundingId: funding._id.toString() }, 'fee address funding failed');
+    await FeeAddressFundingExecution.create({
+      fundingId: funding._id,
+      status: 'failed',
+      amount: funding.topUpAmount,
+      balanceAtCheck: balance,
+      reason: (err as Error)?.message ?? 'UNKNOWN',
+    });
     return 'ok';
   }
 }
