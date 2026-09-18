@@ -23,7 +23,7 @@ export const env = {
   bitgoTestAccessToken:
     process.env.BITGO_TEST_ACCESS_TOKEN ?? process.env.BITGO_ACCESS_TOKEN ?? '',
   // REST base for the TxRequests API (staging by default for this demo).
-  bitgoBaseUrl: process.env.BITGO_BASE_URL ?? 'https://app.bitgo-staging.com',
+  bitgoBaseUrl: process.env.BITGO_BASE_URL ?? 'https://app.bitgo-test.com',
   // Wallet passphrase used to decrypt the user key share for signing.
   // NOT required for custody wallets (BitGo holds the keys) — only set it
   // for self-custody/hot wallets.
