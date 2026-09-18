@@ -102,7 +102,12 @@ describe('processDueSchedule', () => {
   });
 
   it('executes a timestamp smart transaction with a fixed amount', async () => {
-    const schedule = fakeSchedule({ conditionType: 'timestamp', conditionAt: new Date('2026-09-01T00:00:00Z') });
+    const schedule = fakeSchedule({
+      conditionType: 'timestamp',
+      conditionAt: new Date('2026-09-01T00:00:00Z'),
+      // Must still be inside the promised execution window (scheduledFor + occurrenceDeadlineMs).
+      nextRunAt: new Date(Date.now() - 60_000),
+    });
     claimExecution('exec_2');
     mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
     mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_2', state: 'initialized' });
