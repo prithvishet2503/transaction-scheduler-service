@@ -109,6 +109,66 @@ export class BitGoClient {
     return this.coin(coinName).wallets().get({ id: walletId });
   }
 
+  /**
+   * Thin REST layer for the TxRequests API. Runtime paths (balance
+   * pre-check, txrequest create + poll) go through plain REST against
+   * `env.bitgoBaseUrl`; the SDK is used for address validation and staking.
+   */
+  private async api<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${env.bitgoBaseUrl}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${env.bitgoAccessToken}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`bitgo api ${res.status}: ${text.slice(0, 300)}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return (await res.json()) as T;
+  }
+
+  /**
+   * Stake an amount from a custody wallet.
+   * wallet.toStakingWallet().stake({ amount }) → POST /api/staking/v1/{coin}/wallets/{id}/requests
+   */
+  async stake(coinName: string, walletId: string, amount: string): Promise<{ id: string; status: string }> {
+    const wallet = await this.getWallet(coinName, walletId);
+    const result = await wallet.toStakingWallet().stake({ amount });
+    logger.info({ walletId, coin: coinName, amount, requestId: result.id }, 'stake request submitted via SDK');
+    return { id: result.id, status: result.status };
+  }
+
+  /**
+   * Unstake from a specific delegation.
+   * wallet.toStakingWallet().unstake({ delegationId, clientId })
+   */
+  async unstake(
+    coinName: string,
+    walletId: string,
+    delegationId: string,
+    clientId?: string,
+  ): Promise<{ id: string; status: string }> {
+    const wallet = await this.getWallet(coinName, walletId);
+    const result = await wallet.toStakingWallet().unstake({ delegationId, clientId });
+    logger.info({ walletId, coin: coinName, delegationId, requestId: result.id }, 'unstake request submitted via SDK');
+    return { id: result.id, status: result.status };
+  }
+
+  /**
+   * Delegations / staking wallet info.
+   * GET /api/staking/v1/{coin}/wallets/{id}/delegations
+   */
+  async getStakingInfo(coinName: string, walletId: string) {
+    const wallet = await this.getWallet(coinName, walletId);
+    return wallet.toStakingWallet().delegations({});
+  }
+
   async isValidAddress(coinName: string, address: string): Promise<boolean> {
     if (env.bitgoMode === 'demo') {
       logger.warn({ coinName, address }, 'demo mode: skipping coin address validation');
@@ -154,7 +214,7 @@ export class BitGoClient {
     } catch (err) {
       logger.warn({ err }, 'maximumSpendable unavailable');
     }
-    return { spendable: wallet.spendableBalanceString(), maximumSpendable };
+    return { spendable: wallet.spendableBalanceString ?? '0', maximumSpendable };
   }
 
   /** Enterprise-owned recipient balance, backed by BitGo's feeAddressBalance endpoint. */

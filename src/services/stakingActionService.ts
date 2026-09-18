@@ -67,9 +67,19 @@ export async function runStakingCycle(
     const spendableBalance = Number(wallet.spendableBalanceString());
     const coinName = wallet.coin;
 
-    // 2. Fetch staking info (delegations) via SDK
+    // 2. Fetch staking info (delegations) via SDK.
+    // Runtime payloads include amount/source beyond the SDK Delegation type.
     const stakingInfo = await bitgoClient.getStakingInfo(coin, walletId);
-    const delegations: Array<{ id: string; amount: string; source: string; status: string; validator: string }> = stakingInfo.delegations ?? [];
+    const delegations = (stakingInfo.delegations ?? []).map((d) => {
+      const raw = d as typeof d & { amount?: string; source?: string; validator?: string };
+      return {
+        id: raw.id,
+        amount: raw.amount ?? String(raw.delegated ?? 0),
+        source: raw.source ?? '',
+        status: String(raw.status),
+        validator: raw.validator ?? '',
+      };
+    });
     const autoStaked = delegations
       .filter((d: { source: string }) => d.source === 'AUTO_STAKE')
       .reduce((sum: number, d: { amount: string }) => sum + Number(d.amount), 0);
