@@ -22,7 +22,7 @@ const scheduledStakingEntrySchema = new Schema<ScheduledStakingEntryDoc>(
   {
     walletId: { type: String, required: true, index: true },
     coin: { type: String, required: true },
-    enterpriseId: { type: String, required: true },
+    enterpriseId: { type: String, default: '' },
     userId: { type: String, required: true, index: true },
     targetRatio: { type: Number, required: true, default: 0.8, min: 0, max: 1 },
     threshold: { type: Number, required: true, default: 0.02, min: 0, max: 1 },
