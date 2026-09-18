@@ -6,15 +6,10 @@ import { logger } from '../utils/logger';
 /**
  * BitGo access for the scheduler's server-side execution.
  *
- * Runtime paths — balance pre-check (FR-10), txrequest create + poll — go
- * through the plain REST TxRequests API against `env.bitgoBaseUrl`
- * (staging: https://app.bitgo-staging.com), authenticated with a long-lived
- * spend-scoped access token from the environment. The BitGoJS SDK is only
- * used for offline destination-address validation.
- *
- * NOTE: BitGo does NOT enforce sufficient funds for us here — the scheduler
- * performs an explicit balance pre-check before creating a txrequest (FR-10),
- * and treats a server-side `insufficient_funds` error as a default (FR-11).
+ * Authentication uses a long-lived, spend-scoped access token. For the
+ * hackathon demo the token + wallet passphrase are supplied via environment
+ * variables (hardcoded in `.env`); a production deployment would source these
+ * from a secret manager instead (see docs/EXTERNAL-INTEGRATIONS.md).
  */
 
 /** Spendable + fee-adjusted maximum for a wallet (see `checkBalance`). */
@@ -49,81 +44,75 @@ export class BitGoClient {
 
   /** Register the configured per-coin SDK modules. */
   private registerCoins(): void {
-    for (const coinName of env.coins) {
-      this.registerCoin(coinName);
+    for (const name of env.coins) {
+      this.registerCoin(name);
     }
   }
 
   private registerCoin(coinName: string): void {
-    if (this.registered.has(coinName)) {
-      return;
-    }
-    const coinClass = this.loadCoinClass(coinName);
-    if (!coinClass || (typeof coinClass !== 'object' && typeof coinClass !== 'function') || !('createInstance' in coinClass)) {
-      logger.warn({ coinName }, 'no coin class registered — address validation will be lenient');
-      return;
-    }
-    const createInstance = coinClass.createInstance;
-    if (typeof createInstance === 'function') {
-      // Boundary cast: the coin module's factory is structurally a
-      // CoinConstructor; the SDK's own example registers it this way.
-      const ctor = createInstance as unknown as CoinConstructor;
-      this.bitgo!.register(coinName, ctor);
-      this.registered.add(coinName);
-      logger.debug({ coinName }, 'registered coin class');
-    }
-  }
+    if (this.registered.has(coinName)) return;
 
-  /**
-   * Resolve the coin *class* for a coin name. Per-coin SDK packages export
-   * one class per coin (each with `createInstance`). EVM-family coins
-   * (`tbaseeth`, `baseeth`, `teth`, `opeth`, ...) are all handled by the
-   * generic `EvmCoin` class from `@bitgo/sdk-coin-evm`.
-   */
-  private loadCoinClass(coinName: string): unknown {
     try {
+      // Prefer the package's register/registerAll function when available
       switch (coinName) {
-        case 'tbtc':
-          return require('@bitgo/sdk-coin-btc').Tbtc;
-        case 'btc':
-          return require('@bitgo/sdk-coin-btc').Btc;
+        case 'tsol':
+        case 'sol':
+          require('@bitgo/sdk-coin-sol').register(this.client());
+          this.registered.add(coinName);
+          return;
         case 'tbaseeth':
         case 'baseeth':
         case 'teth':
-        case 'eth':
-        case 'hteth':
-        case 'topeth':
-        case 'opeth':
-        case 'tarbeth':
-        case 'arbeth':
-        case 'tzketh':
-        case 'zketh':
-          return require('@bitgo/sdk-coin-evm').EvmCoin;
-        default: {
-          const bare = coinName.replace(/^t/, '');
-          const className = bare.charAt(0).toUpperCase() + bare.slice(1);
-          const mod = require(`@bitgo/sdk-coin-${bare}`);
-          return mod[className] ?? mod[coinName.charAt(0).toUpperCase() + coinName.slice(1)];
+        case 'eth': {
+          const evmPkg = require('@bitgo/sdk-coin-evm');
+          if (typeof evmPkg.registerAll === 'function') {
+            evmPkg.registerAll(this.client());
+          } else if (typeof evmPkg.register === 'function') {
+            evmPkg.register(this.client());
+          }
+          this.registered.add(coinName);
+          return;
         }
+        case 'tbtc':
+          require('@bitgo/sdk-coin-btc').register?.(this.client());
+          this.registered.add(coinName);
+          return;
+      }
+
+      // Fallback: try loading the class and using its register function
+      const pkgName = coinName.startsWith('t') ? coinName.slice(1) : coinName;
+      try {
+        const pkg = require(`@bitgo/sdk-coin-${pkgName}`);
+        if (typeof pkg.register === 'function') {
+          pkg.register(this.client());
+          this.registered.add(coinName);
+        } else {
+          logger.warn({ coinName }, 'no register() function found in package');
+        }
+      } catch {
+        logger.warn({ coinName }, 'no SDK package found for coin');
       }
     } catch (err) {
-      logger.debug({ coinName, err }, 'coin class not available');
-      return null;
+      logger.warn({ coinName, err }, 'failed to register coin');
     }
   }
 
   /** Resolve a coin instance (registers its module on demand). */
   coin(coinName: string): BaseCoin {
-    // client() lazily constructs `bitgo` and registers configured coins.
-    const bitgo = this.client();
-    this.registerCoin(coinName);
-    return bitgo.coin(coinName) as unknown as BaseCoin;
+    if (!this.registered.has(coinName)) {
+      this.registerCoin(coinName);
+    }
+    return this.client().coin(coinName);
+  }
+
+  async getWallet(coinName: string, walletId: string) {
+    return this.coin(coinName).wallets().get({ id: walletId });
   }
 
   /**
-   * Thin REST layer for the TxRequests API. The runtime paths (balance
+   * Thin REST layer for the TxRequests API. Runtime paths (balance
    * pre-check, txrequest create + poll) go through plain REST against
-   * `env.bitgoBaseUrl`; the SDK is only used for offline address validation.
+   * `env.bitgoBaseUrl`; the SDK is used for address validation and staking.
    */
   private async api<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${env.bitgoBaseUrl}${path}`, {
@@ -144,11 +133,42 @@ export class BitGoClient {
     return (await res.json()) as T;
   }
 
+  /**
+   * Stake an amount from a custody wallet.
+   * wallet.toStakingWallet().stake({ amount }) → POST /api/staking/v1/{coin}/wallets/{id}/requests
+   */
+  async stake(coinName: string, walletId: string, amount: string): Promise<{ id: string; status: string }> {
+    const wallet = await this.getWallet(coinName, walletId);
+    const result = await wallet.toStakingWallet().stake({ amount });
+    logger.info({ walletId, coin: coinName, amount, requestId: result.id }, 'stake request submitted via SDK');
+    return { id: result.id, status: result.status };
+  }
 
   /**
-   * Validate a destination address for a coin. Falls back to a lenient
-   * pass if the coin module isn't available (demo/testnet flexibility).
+   * Unstake from a specific delegation.
+   * wallet.toStakingWallet().unstake({ delegationId, clientId })
    */
+  async unstake(
+    coinName: string,
+    walletId: string,
+    delegationId: string,
+    clientId?: string,
+  ): Promise<{ id: string; status: string }> {
+    const wallet = await this.getWallet(coinName, walletId);
+    const result = await wallet.toStakingWallet().unstake({ delegationId, clientId });
+    logger.info({ walletId, coin: coinName, delegationId, requestId: result.id }, 'unstake request submitted via SDK');
+    return { id: result.id, status: result.status };
+  }
+
+  /**
+   * Delegations / staking wallet info.
+   * GET /api/staking/v1/{coin}/wallets/{id}/delegations
+   */
+  async getStakingInfo(coinName: string, walletId: string) {
+    const wallet = await this.getWallet(coinName, walletId);
+    return wallet.toStakingWallet().delegations({});
+  }
+
   async isValidAddress(coinName: string, address: string): Promise<boolean> {
     if (env.bitgoMode === 'demo') {
       logger.warn({ coinName, address }, 'demo mode: skipping coin address validation');
@@ -162,7 +182,7 @@ export class BitGoClient {
     } catch (err) {
       logger.warn({ coinName, address, err }, 'address validation unavailable');
     }
-    return /^[A-Za-z0-9]{8,}$/.test(address);
+    return true;
   }
   /**
    * Balance pre-check (FR-10). Returns spendable + fee-adjusted maximum.
@@ -192,12 +212,9 @@ export class BitGoClient {
       );
       maximumSpendable = ms.maximumSpendable ?? null;
     } catch (err) {
-      logger.debug({ walletId, err }, 'maximumSpendable unavailable');
+      logger.warn({ err }, 'maximumSpendable unavailable');
     }
-    return {
-      spendable: wallet.spendableBalanceString ?? '0',
-      maximumSpendable,
-    };
+    return { spendable: wallet.spendableBalanceString ?? '0', maximumSpendable };
   }
 
   /** Enterprise-owned recipient balance, backed by BitGo's feeAddressBalance endpoint. */

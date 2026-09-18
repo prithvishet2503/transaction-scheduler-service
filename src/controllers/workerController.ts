@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { cronTick } from '../workers/cronWorker';
 import { reapStuckClaims } from '../workers/reaper';
+import { stakingTick } from '../workers/stakingWorker';
 import { env } from '../config/env';
 
 /**
@@ -13,5 +14,6 @@ export async function workerTickHandler(req: Request, res: Response) {
   }
   const reaped = await reapStuckClaims();
   await cronTick();
+  await stakingTick();
   res.json({ ok: true, reaped });
 }

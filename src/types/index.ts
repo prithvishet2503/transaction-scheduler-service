@@ -148,3 +148,47 @@ export interface ExecutionRecord {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** Staking-specific types for the scheduled-staking feature. */
+
+export type StakingEntryStatus = 'active' | 'paused' | 'cancelled';
+
+export type StakingActionType = 'STAKE' | 'UNSTAKE' | 'NONE';
+
+export interface StakingAction {
+  type: StakingActionType;
+  amount: string; // base units as string
+}
+
+export interface StakingWalletBalance {
+  walletId: string;
+  spendableBalance: string; // base units
+  delegatedAmount: string;  // auto-staked amount from staking-service
+  pendingUnstake: string;
+  pendingStake: string;
+}
+
+export interface StakingDelegation {
+  delegated: string;
+  source: 'AUTO_STAKE' | 'MANUAL';
+  status: string;
+  validator: string;
+  /** UUID from staking-service, needed for UNSTAKE requests */
+  delegationId?: string;
+}
+
+/** Matches staking-engine's SolStakingServiceRequest model.
+ *  STAKE: { type, amount, validator }
+ *  UNSTAKE: { type, amount, delegationId } */
+export interface StakingRequestInput {
+  requestingUserId: string;
+  request: {
+    type: 'STAKE' | 'UNSTAKE';
+    /** Required for STAKE, not needed for UNSTAKE */
+    amount?: string;
+    /** Required for STAKE (per-environment config), not needed for UNSTAKE */
+    validator?: string;
+    /** Required for UNSTAKE, identifies the delegation to unstake */
+    delegationId?: string;
+  };
+}
