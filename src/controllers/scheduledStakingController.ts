@@ -50,12 +50,16 @@ export async function createStakingEntryHandler(req: Request, res: Response) {
 }
 
 /**
- * GET /api/v1/scheduled-staking
- * List scheduled-staking entries for the authenticated user.
+ * GET /api/v1/scheduled-staking?walletId=
+ * List scheduled-staking entries for the authenticated user,
+ * optionally filtered by wallet.
  */
 export async function listStakingEntriesHandler(req: Request, res: Response) {
-  const userId = req.userId!;
-  const entries = await ScheduledStakingEntry.find({ userId }).sort({ createdAt: -1 });
+  const query: { userId: string; walletId?: string } = { userId: req.userId! };
+  if (req.query.walletId) {
+    query.walletId = String(req.query.walletId);
+  }
+  const entries = await ScheduledStakingEntry.find(query).sort({ createdAt: -1 });
   res.json({ data: entries });
 }
 
