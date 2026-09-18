@@ -17,6 +17,7 @@ import { listAlertsHandler } from '../controllers/alertsController';
 import {
   cancelStakingEntryHandler,
   createStakingEntryHandler,
+  disableStakingByWalletHandler,
   getStakingEntryHandler,
   listStakingEntriesHandler,
   pauseStakingEntryHandler,
@@ -44,6 +45,7 @@ apiRouter.delete('/smart-transactions/:id', asyncHandler(cancelSmartTransactionH
 apiRouter.get('/smart-transactions/:id/executions', asyncHandler(listSmartTransactionExecutionsHandler));
 // Scheduled staking CRUD
 apiRouter.post('/scheduled-staking', asyncHandler(createStakingEntryHandler));
+apiRouter.delete('/scheduled-staking', asyncHandler(disableStakingByWalletHandler));
 apiRouter.get('/scheduled-staking', asyncHandler(listStakingEntriesHandler));
 apiRouter.get('/scheduled-staking/:id', asyncHandler(getStakingEntryHandler));
 apiRouter.patch('/scheduled-staking/:id', asyncHandler(updateStakingEntryHandler));

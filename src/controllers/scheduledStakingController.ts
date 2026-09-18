@@ -173,3 +173,21 @@ export async function cancelStakingEntryHandler(req: Request, res: Response) {
   }
   res.json({ data: entry });
 }
+
+/**
+ * DELETE /api/v1/scheduled-staking?walletId=
+ * Disable scheduled staking for a wallet by hard-deleting all its entries.
+ */
+export async function disableStakingByWalletHandler(req: Request, res: Response) {
+  const walletId = req.query.walletId;
+  if (!walletId) {
+    return res.status(400).json({ error: 'walletId is required' });
+  }
+  const result = await ScheduledStakingEntry.deleteMany({ walletId: String(walletId) });
+  if (result.deletedCount === 0) {
+    return res.status(404).json({ error: 'staking entry not found' });
+  }
+  logger.info({ walletId, deletedCount: result.deletedCount },
+    'scheduled staking disabled for wallet');
+  res.json({ data: { walletId, deletedCount: result.deletedCount } });
+}
