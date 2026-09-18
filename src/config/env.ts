@@ -19,8 +19,7 @@ export const env = {
   // --- BitGo (hardcoded for hackathon demo; NOT KMS-backed) ---
   bitgoEnv: (process.env.BITGO_ENV ?? 'test') as 'test' | 'prod',
   bitgoAccessToken: process.env.BITGO_ACCESS_TOKEN ?? '<set-your-testnet-access-token>',
-  // Test-env BitGo token for the fee-address enterprise endpoints
-  // (app.bitgo-test.com); falls back to the main token when unset.
+  // Test-env token for BitGo test endpoints; falls back to the main token when unset.
   bitgoTestAccessToken:
     process.env.BITGO_TEST_ACCESS_TOKEN ?? process.env.BITGO_ACCESS_TOKEN ?? '',
   // REST base for the TxRequests API (staging by default for this demo).
@@ -33,7 +32,7 @@ export const env = {
   bitgoMode: (process.env.BITGO_MODE ?? 'real') as 'real' | 'demo',
   // Spendable balance (base units, string) reported by the demo precheck.
   demoSpendable: process.env.DEMO_SPENDABLE ?? '0',
-  // When set, demo sendMany returns a pendingApproval result instead of a broadcast.
+  // When set, demo TxRequest stays pending approval instead of broadcasting.
   demoPendingApprovalId: process.env.DEMO_PENDING_APPROVAL_ID ?? '',
   // Comma-separated coin list the SDK should register (e.g. "tbaseeth,tbtc").
   coins: (process.env.COINS ?? 'tbaseeth').split(',').filter(Boolean),
@@ -47,6 +46,13 @@ export const env = {
   workerStuckClaimMs: int(process.env.WORKER_STUCK_CLAIM_MS, 15 * 60_000),
   workerMaxAttempts: int(process.env.WORKER_MAX_ATTEMPTS, 3),
   workerBatchSize: int(process.env.WORKER_BATCH_SIZE, 100),
+  // Re-arm cadence for balance-conditioned smart transactions: every check
+  // (fired or not) reschedules the next check this far out (user: 5 minutes).
+  balanceCheckIntervalMs: int(process.env.BALANCE_CHECK_INTERVAL_MS, 5 * 60_000),
+  // Promised timeline + buffer: a timestamp occurrence that has not proceeded
+  // within this window after its scheduled time is never retried (user promise);
+  // balance rules are exempt (standing monitors).
+  occurrenceDeadlineMs: int(process.env.OCCURRENCE_DEADLINE_MS, 20 * 60_000),
   // Inline post-creation poll of the created txrequest (best-effort).
   txRequestPollAttempts: int(process.env.TX_REQUEST_POLL_ATTEMPTS, 5),
   txRequestPollIntervalMs: int(process.env.TX_REQUEST_POLL_INTERVAL_MS, 2_000),
@@ -71,14 +77,8 @@ export const env = {
   kafkaBrokers: (process.env.KAFKA_BROKERS ?? '').split(',').filter(Boolean),
   kafkaTopicPrefix: process.env.KAFKA_TOPIC_PREFIX ?? 'tx-scheduler',
 
-// --- Webhook (BitGo transfer-confirmed → execution 'confirmed') ---
+  // --- Webhook (BitGo transfer-confirmed → execution 'confirmed') ---
   webhookSecret: process.env.WEBHOOK_SECRET ?? 'dev-webhook-secret',
-
-  // --- Fee-address (gas tank) auto-funding ---
-  // How often the monitor polls active fee-address fundings (ms).
-  feeAddressPollIntervalMs: int(process.env.FEE_ADDRESS_POLL_INTERVAL_MS, 5 * 60_000),
-// Default threshold below which a funding is triggered (base units).
-  feeAddressDefaultThreshold: process.env.FEE_ADDRESS_DEFAULT_THRESHOLD ?? '50000000000000000000',
 } as const;
 
 export type Env = typeof env;

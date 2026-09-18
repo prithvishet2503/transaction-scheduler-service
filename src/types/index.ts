@@ -2,8 +2,8 @@
 
 export type Frequency = 'one_time' | 'daily' | 'weekly' | 'monthly';
 
-/** Discriminator between the two schedule kinds sharing one collection. */
-export type ScheduleKind = 'payment' | 'fee-address-funding';
+export type SmartTransactionKind = 'smart-transaction';
+export type ScheduleKind = SmartTransactionKind;
 
 export type ScheduleStatus = 'active' | 'paused' | 'cancelled' | 'completed';
 
@@ -18,21 +18,32 @@ export type ExecutionStatus =
 
 export type DefaultReason = 'INSUFFICIENT_BALANCE' | 'BALANCE_CONDITION_NOT_MET';
 
-/**
- * Trigger condition on a schedule. A creation request carries exactly one
- * variant — balance-relative or timestamp — never both (mutually exclusive).
- */
-export type BalanceConditionOperator = 'above' | 'below' | 'equals';
+export type BalanceConditionOperator = 'above' | 'below';
+export type BalanceMonitor = 'sender' | 'recipient';
 
-/** Condition as accepted by the creation API. */
-export type ScheduleConditionInput =
-  | { type: 'balance'; operator: BalanceConditionOperator; limit: string } // base units
-  | { type: 'timestamp'; at: string }; // ISO
+export type SmartTransactionRuleInput =
+  | { type: 'timestamp'; at: string }
+  | {
+      type: 'balance';
+      monitor: BalanceMonitor;
+      operator: BalanceConditionOperator;
+      threshold?: string;
+      limit?: string;
+      leaveBalance?: string;
+    };
 
-/** Condition as stored/returned (timestamp materialized to a Date). */
-export type ScheduleCondition =
-  | { type: 'balance'; operator: BalanceConditionOperator; limit: string } // base units
-  | { type: 'timestamp'; at: Date };
+export type SmartTransactionRule =
+  | { type: 'timestamp'; at: Date }
+  | {
+      type: 'balance';
+      monitor: BalanceMonitor;
+      operator: BalanceConditionOperator;
+      threshold: string;
+      leaveBalance?: string;
+    };
+
+export type ScheduleConditionInput = SmartTransactionRuleInput;
+export type ScheduleCondition = SmartTransactionRule;
 
 export type NotificationType =
   | 'schedule_created'
@@ -40,81 +51,71 @@ export type NotificationType =
   | 'defaulted'
   | 'execution_failed';
 
-/** One payee in a scheduled send. Amounts are base-unit strings. */
+/** One payee in a smart transaction. Amount is optional for sender sweep rules. */
 export interface Recipient {
   address: string;
-  amount: string;
+  amount?: string;
+  walletId?: string;
 }
 
 /** Amounts are stored as strings in base units to avoid JS precision loss. */
-export interface ScheduleInput {
+export interface SmartTransactionInput {
   userId: string;
   enterpriseId?: string;
-  walletId: string;
+  fromWalletId: string;
+  walletId?: string;
   coin: string;
-  /** Single-payee shortcut; ignored when `recipients` is provided. */
+  /** Single-recipient shortcut. */
+  recipient?: Recipient;
+  /** Legacy single-payee shortcut. */
   destinationAddress?: string;
-  /** Single-payee shortcut; ignored when `recipients` is provided. */
+  /** Legacy single-payee shortcut. */
   amount?: string;
-  /** One or more payees. One BitGo send per occurrence. */
-  recipients?: Recipient[];
-  tokenName?: string; // when set, the send uses a transferToken intent
-  frequency: Frequency;
-  startAt?: string; // ISO
-  endAt?: string; // ISO
-  timezone: string; // IANA
+  tokenName?: string;
+  rule: SmartTransactionRuleInput;
+  condition?: SmartTransactionRuleInput;
+  repeat?: boolean;
+  frequency?: Frequency;
+  startAt?: string;
+  endAt?: string;
+  timezone?: string;
   note?: string;
   reminderOffsetMs?: number;
-  condition?: ScheduleConditionInput;
 }
 
-export interface FeeAddressFundingRecord {
+export type ScheduleInput = SmartTransactionInput & {
+  recipients?: Recipient[];
+};
+
+export interface SmartTransactionRecord {
+  kind: SmartTransactionKind;
   id: string;
   userId: string;
   enterpriseId?: string;
-  coin: string;
-  feeAddress: string;
   fromWalletId: string;
-  thresholdAmount: string;
-  topUpAmount: string;
-  emailOnDefault: boolean;
-  status: ScheduleStatus;
-  lastBalance: string | null;
-  lastCheckAt: Date | null;
-  lastFundedAt: Date | null;
-  consecutiveDefaultedCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface ScheduleRecord {
-  kind: ScheduleKind;
-  id: string;
-  userId: string;
-  enterpriseId?: string;
   walletId: string;
   coin: string;
+  recipient: Recipient;
   destinationAddress: string;
   amount: string;
-  recipients: Recipient[];
+  tokenName?: string;
+  rule?: SmartTransactionRule;
+  condition?: SmartTransactionRule;
+  repeat: boolean;
   frequency: Frequency;
   startAt?: Date;
   endAt?: Date;
   timezone: string;
   note?: string;
   reminderOffsetMs: number;
-  condition?: ScheduleCondition;
-  emailOnDefault?: boolean;
-  lastBalance?: string | null;
-  lastCheckAt?: Date | null;
-  lastFundedAt?: Date | null;
   status: ScheduleStatus;
   nextRunAt: Date | null;
   lastRunAt?: Date | null;
-  tokenName?: string;
+  lastBalance?: string | null;
+  lastCheckAt?: Date | null;
   consecutiveDefaultedCount: number;
   lastReminderSentForRunAt?: Date | null;
-  /** Latest execution summary embedded by listSchedules (FE table column). */
+  /** Latest execution summary embedded by listSmartTransactions. */
   lastExecution?: {
     status: string;
     reason?: string;
@@ -125,6 +126,8 @@ export interface ScheduleRecord {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type ScheduleRecord = SmartTransactionRecord;
 
 export interface ExecutionRecord {
   id: string;

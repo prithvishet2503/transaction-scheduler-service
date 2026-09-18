@@ -200,46 +200,57 @@ export class BitGoClient {
     };
   }
 
-  /**
-   * Direct SDK send used by the fee-address auto-funder. `sequenceId` makes
-   * retries idempotent (FR-6). Scheduled transactions use txrequests instead.
-   */
-  async getWallet(coinName: string, walletId: string) {
-    const coin = this.coin(coinName);
-    return coin.wallets().get({ id: walletId });
+  /** Enterprise-owned recipient balance, backed by BitGo's feeAddressBalance endpoint. */
+  async getEnterpriseRecipientBalance(enterpriseId: string, coin: string): Promise<{ balance: string; address: string }> {
+    const baseUrl = env.bitgoBaseUrl;
+    const res = await fetch(`${baseUrl}/api/v2/${coin}/enterprise/${enterpriseId}/feeAddressBalance`, {
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${env.bitgoTestAccessToken}`,
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const err = new Error(`enterprise recipient balance failed: ${res.status} ${body.slice(0, 200)}`) as Error & { status?: number };
+      err.status = 502;
+      throw err;
+    }
+    const data = (await res.json()) as { balance?: string | number; address?: string };
+    if (
+      (typeof data.balance !== 'string' && typeof data.balance !== 'number') ||
+      typeof data.address !== 'string'
+    ) {
+      const err = new Error('enterprise recipient balance response malformed') as Error & { status?: number };
+      err.status = 502;
+      throw err;
+    }
+    return { balance: String(data.balance), address: data.address };
   }
 
-  async sendMany(params: {
-    coin: string;
-    walletId: string;
-    address: string;
-    amount: string;
-    minConfirms?: number;
-    sequenceId: string;
-    comment?: string;
-  }) {
-    const wallet = await this.getWallet(params.coin, params.walletId);
-    const options: {
-      type: string;
-      recipients: { address: string; amount: string }[];
-      walletPassphrase?: string;
-      minConfirms: number;
-      sequenceId: string;
-      comment?: string;
-    } = {
-      // 'transfer' is the EVM payment intent type; without it the SDK throws
-      // "transaction type not supported: undefined" for custody/TSS wallets.
-      type: 'transfer',
-      recipients: [{ address: params.address, amount: params.amount }],
-      minConfirms: params.minConfirms ?? 0,
-      sequenceId: params.sequenceId,
-      comment: params.comment,
-    };
-    if (env.bitgoWalletPassphrase && !env.bitgoWalletPassphrase.startsWith('<set-')) {
-      options.walletPassphrase = env.bitgoWalletPassphrase;
+  /**
+   * Resolve an address to the BitGo wallet that owns it (receive address match).
+   * Returns null when the address does not belong to any wallet.
+   */
+  async resolveWalletIdByAddress(coinName: string, address: string): Promise<string | null> {
+    if (env.bitgoMode === 'demo') {
+      logger.warn({ coinName, address }, 'demo mode: synthesizing wallet id from address');
+      return `demo-${address}`;
     }
-    return wallet.sendMany(options);
+    try {
+      const wallet = await this.api<{ id?: string }>(
+        'GET',
+        `/api/v2/${coinName}/wallet/address/${encodeURIComponent(address)}`,
+      );
+      return wallet.id ?? null;
+    } catch (err) {
+      if (typeof err === 'object' && err !== null && 'status' in err && err.status === 404) {
+        return null;
+      }
+      logger.warn({ coinName, address, err }, 'wallet resolution by address failed');
+      return null;
+    }
   }
+
 
   /** Create a txrequest for one intent (payment / transferToken). */
   async createTxRequest(

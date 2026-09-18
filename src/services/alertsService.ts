@@ -1,5 +1,5 @@
 import { ScheduledTransaction } from '../models/ScheduledTransaction';
-import { toRecord } from './scheduleService';
+import { toRecord } from './smartTransactionService';
 import type { ScheduleRecord } from '../types';
 
 export type AlertKind = 'defaulted' | 'reminder';
@@ -35,10 +35,10 @@ function contentOf(schedule: ScheduleRecord): AlertRecord['content'] {
 }
 
 /**
- * In-app alerts for the current user (LLD §4 GET /me/alerts), derived from the
- * user's active schedules: a `defaulted` alert per schedule with
- * `consecutiveDefaultedCount >= 1` (FR-12) and an upcoming-payment `reminder`
- * alert inside the reminder window (FR-14: nextRunAt - reminderOffset <= now < nextRunAt).
+ * In-app alerts for the current user, derived from active smart transactions:
+ * a `defaulted` alert per transaction with `consecutiveDefaultedCount >= 1`
+ * and an upcoming-payment `reminder` alert inside the reminder window
+ * (`nextRunAt - reminderOffset <= now < nextRunAt`).
  */
 export async function listAlerts(userId: string): Promise<AlertRecord[]> {
   const now = Date.now();

@@ -63,10 +63,10 @@ const scheduleExecutionSchema = new Schema<ScheduleExecutionDoc>(
     sequenceId: { type: String, required: true, index: true },
     error: { type: String },
   },
-  { timestamps: true, collection: 'scheduleExecutions' },
+  { timestamps: true, collection: 'smartTxnExecutions' },
 );
 
-// Exactly one execution per (schedule, occurrence) — prevents duplicate ticks.
+// Exactly one execution per smart transaction occurrence — prevents duplicate ticks.
 scheduleExecutionSchema.index(
   { scheduleId: 1, scheduledFor: 1 },
   { unique: true },

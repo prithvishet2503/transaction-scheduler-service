@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# service-config.sh — prints the service metadata used by CI/CD and docs.
+# service-config.sh — prints service metadata used by CI/CD.
 # Mirrors the pattern used by other BitGo microservices.
 set -euo pipefail
 
@@ -15,7 +15,6 @@ cat <<EOF
   "port": $PORT,
   "stack": "node/typescript/express/mongodb",
   "scheduling": "claim-based mongo cron worker (no temporal)",
-  "coins": "$COINS",
-  "docs": "https://github.com/$REPO/blob/master/docs/README.md"
+  "coins": "$COINS"
 }
 EOF

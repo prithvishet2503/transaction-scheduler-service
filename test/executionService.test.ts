@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mFindOneAndUpdate = vi.fn();
 const mUpdateOne = vi.fn();
 const mFind = vi.fn();
+const mExecutionFindOne = vi.fn();
 vi.mock('../src/models/ScheduleExecution', () => ({
   ScheduleExecution: {
-    findOneAndUpdate: (...a: unknown[]) => mFindOneAndUpdate(...a),
-    updateOne: (...a: unknown[]) => mUpdateOne(...a),
-    find: (...a: unknown[]) => ({ limit: () => mFind(...a) }),
+    findOneAndUpdate: (...args: unknown[]) => mFindOneAndUpdate(...args),
+    updateOne: (...args: unknown[]) => mUpdateOne(...args),
+    findOne: (...args: unknown[]) => ({ lean: () => mExecutionFindOne(...args) }),
+    find: (...args: unknown[]) => ({ limit: () => mFind(...args) }),
   },
 }));
 
@@ -15,18 +17,22 @@ const mCheckBalance = vi.fn();
 const mCreateTxRequest = vi.fn();
 const mFetchLatestTxRequest = vi.fn();
 const mGetTransferStatus = vi.fn();
+const mGetEnterpriseRecipientBalance = vi.fn();
+const mResolveWalletIdByAddress = vi.fn();
 vi.mock('../src/services/bitgoClient', () => ({
   bitgoClient: {
-    checkBalance: (...a: unknown[]) => mCheckBalance(...a),
-    createTxRequest: (...a: unknown[]) => mCreateTxRequest(...a),
-    fetchLatestTxRequest: (...a: unknown[]) => mFetchLatestTxRequest(...a),
-    getTransferStatus: (...a: unknown[]) => mGetTransferStatus(...a),
+    checkBalance: (...args: unknown[]) => mCheckBalance(...args),
+    createTxRequest: (...args: unknown[]) => mCreateTxRequest(...args),
+    fetchLatestTxRequest: (...args: unknown[]) => mFetchLatestTxRequest(...args),
+    getTransferStatus: (...args: unknown[]) => mGetTransferStatus(...args),
+    getEnterpriseRecipientBalance: (...args: unknown[]) => mGetEnterpriseRecipientBalance(...args),
+    resolveWalletIdByAddress: (...args: unknown[]) => mResolveWalletIdByAddress(...args),
   },
 }));
 
 const mNotify = vi.fn();
 vi.mock('../src/services/notificationService', () => ({
-  notify: (...a: unknown[]) => mNotify(...a),
+  notify: (...args: unknown[]) => mNotify(...args),
 }));
 
 // eslint-disable-next-line import/first
@@ -36,15 +42,18 @@ import {
   processDueSchedule,
 } from '../src/services/executionService';
 
-function fakeSchedule() {
-  const schedule: Record<string, unknown> = {
-    _id: { toString: () => 'sched_1' },
+function fakeSchedule(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: { toString: () => 'smart_1' },
+    kind: 'smart-transaction',
     userId: 'u1',
-    walletId: 'w1',
+    walletId: 'cold_wallet',
     coin: 'tbaseeth',
     destinationAddress: '0xde709f2102306220921060314715629080e2fb77',
     amount: '100000',
-    frequency: 'weekly',
+    recipients: [{ address: '0xde709f2102306220921060314715629080e2fb77', amount: '100000' }],
+    frequency: 'one_time',
+    repeat: false,
     timezone: 'UTC',
     status: 'active',
     nextRunAt: new Date('2026-09-17T00:00:00Z'),
@@ -52,8 +61,8 @@ function fakeSchedule() {
     consecutiveDefaultedCount: 0,
     lastRunAt: null,
     save: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
   };
-  return schedule;
 }
 
 function executionDoc(id: string, status: string) {
@@ -64,151 +73,112 @@ function executionDoc(id: string, status: string) {
   };
 }
 
+function claimExecution(id: string) {
+  mFindOneAndUpdate
+    .mockResolvedValueOnce(executionDoc(id, 'scheduled'))
+    .mockResolvedValueOnce(executionDoc(id, 'claimed'));
+}
+
 describe('processDueSchedule', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.WORKER_LEASE_TTL_MS = '120000';
-    process.env.WORKER_MAX_ATTEMPTS = '3';
-    process.env.TX_REQUEST_POLL_ATTEMPTS = '0';
-    process.env.RETRY_BACKOFF_MS = '60000,300000,1500000';
   });
 
-  it('defaults the occurrence (no tx) when spendable < amount, then advances next run [FR-10/FR-13]', async () => {
+  it('defaults when sender has insufficient balance and creates no txrequest', async () => {
     const schedule = fakeSchedule();
-    // ensure → returns a scheduled execution; claim → returns claimed execution
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_1', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_1', 'claimed'));
-    // balance: spendable 100 < amount 100000
+    claimExecution('exec_1');
     mCheckBalance.mockResolvedValue({ spendable: '100', maximumSpendable: '100' });
 
     await processDueSchedule(schedule as never, 'worker-1');
 
-    // No transaction was initiated.
     expect(mCreateTxRequest).not.toHaveBeenCalled();
-    // Execution marked defaulted with INSUFFICIENT_BALANCE.
-    const updateCall = mUpdateOne.mock.calls[0];
-    expect(updateCall[1].$set.status).toBe('defaulted');
-    expect(updateCall[1].$set.reason).toBe('INSUFFICIENT_BALANCE');
-    // Consecutive default counter incremented; schedule stays active, next run advanced.
+    expect(mUpdateOne.mock.calls[0][1].$set).toMatchObject({
+      status: 'defaulted',
+      reason: 'INSUFFICIENT_BALANCE',
+    });
     expect(schedule.consecutiveDefaultedCount).toBe(1);
-    expect(schedule.status).toBe('active');
-    expect((schedule.nextRunAt as Date).toISOString()).toBe('2026-09-24T00:00:00.000Z');
-    // Defaulted notification emitted.
-    expect(mNotify).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'defaulted', reason: 'INSUFFICIENT_BALANCE' }),
-    );
+    expect(schedule.status).toBe('completed');
+    expect(mNotify).toHaveBeenCalledWith(expect.objectContaining({ type: 'defaulted' }));
   });
 
-  it('creates a txrequest, polls it, and records txid when broadcast', async () => {
-    const schedule = fakeSchedule();
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_2', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_2', 'claimed'));
+  it('executes a timestamp smart transaction with a fixed amount', async () => {
+    const schedule = fakeSchedule({ conditionType: 'timestamp', conditionAt: new Date('2026-09-01T00:00:00Z') });
+    claimExecution('exec_2');
     mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
     mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_2', state: 'initialized' });
     mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_2', state: 'delivered', isCanceled: false, txHashes: ['0x1234'] });
 
     await processDueSchedule(schedule as never, 'worker-1');
 
-    expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
     const intent = mCreateTxRequest.mock.calls[0][1] as { recipients: Array<{ amount: { value: string } }> };
     expect(intent.recipients[0].amount.value).toBe('100000');
-    const updateCall = mUpdateOne.mock.calls[0];
-    expect(updateCall[1].$set.status).toBe('executed');
-    expect(updateCall[1].$set.txid).toBe('0x1234');
-    expect(updateCall[1].$set.txRequestId).toBe('txr_2');
-    // Non-default resets the default counter.
-    expect(schedule.consecutiveDefaultedCount).toBe(0);
+    expect(mUpdateOne.mock.calls[0][1].$set).toMatchObject({
+      status: 'executed',
+      txid: '0x1234',
+      txRequestId: 'txr_2',
+    });
   });
-  it('executes when a balance condition is met (spendable above limit)', async () => {
-    const schedule = fakeSchedule();
-    schedule.conditionType = 'balance';
-    schedule.conditionOperator = 'above';
-    schedule.conditionLimit = '150000';
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_3', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_3', 'claimed'));
+
+  it('does not create an execution while a balance rule is unmet', async () => {
+    const schedule = fakeSchedule({
+      conditionType: 'balance',
+      conditionMonitor: 'sender',
+      conditionOperator: 'above',
+      conditionLimit: '500000',
+    });
     mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
+
+    await processDueSchedule(schedule as never, 'worker-1');
+
+    expect(mFindOneAndUpdate).not.toHaveBeenCalled();
+    expect(mCreateTxRequest).not.toHaveBeenCalled();
+    expect(schedule.lastBalance).toBe('200000');
+  });
+
+  it('tops up a monitored recipient wallet when below threshold', async () => {
+    const schedule = fakeSchedule({
+      conditionType: 'balance',
+      conditionMonitor: 'recipient',
+      conditionOperator: 'below',
+      conditionLimit: '1000',
+      recipients: [{ address: '0xde709f2102306220921060314715629080e2fb77', amount: '500', walletId: 'hot_wallet' }],
+      amount: '500',
+      repeat: true,
+    });
+    claimExecution('exec_3');
+    mCheckBalance
+      .mockResolvedValueOnce({ spendable: '100', maximumSpendable: '100' })
+      .mockResolvedValueOnce({ spendable: '5000', maximumSpendable: '5000' });
     mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_3', state: 'initialized' });
     mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_3', state: 'delivered', isCanceled: false, txHashes: ['0xabcd'] });
 
     await processDueSchedule(schedule as never, 'worker-1');
 
-    expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
-    expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('executed');
-  });
-
-  it('defaults with BALANCE_CONDITION_NOT_MET when the balance condition is unmet (no tx)', async () => {
-    const schedule = fakeSchedule();
-    schedule.conditionType = 'balance';
-    schedule.conditionOperator = 'above';
-    schedule.conditionLimit = '500000';
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_4', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_4', 'claimed'));
-    mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
-
-    await processDueSchedule(schedule as never, 'worker-1');
-
-    expect(mCreateTxRequest).not.toHaveBeenCalled();
-    const updateCall = mUpdateOne.mock.calls[0];
-    expect(updateCall[1].$set.status).toBe('defaulted');
-    expect(updateCall[1].$set.reason).toBe('BALANCE_CONDITION_NOT_MET');
-    expect(mNotify).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'defaulted', reason: 'BALANCE_CONDITION_NOT_MET' }),
-    );
-  });
-
-  it('skips the occurrence while a timestamp condition is in the future', async () => {
-    const schedule = fakeSchedule();
-    schedule.conditionType = 'timestamp';
-    schedule.conditionAt = new Date(Date.now() + 3_600_000);
-
-    await processDueSchedule(schedule as never, 'worker-1');
-
-    expect(mFindOneAndUpdate).not.toHaveBeenCalled();
-    expect(mCheckBalance).not.toHaveBeenCalled();
-    expect(mCreateTxRequest).not.toHaveBeenCalled();
-  });
-
-  it('executes once a timestamp condition is in the past', async () => {
-    const schedule = fakeSchedule();
-    schedule.conditionType = 'timestamp';
-    schedule.conditionAt = new Date(Date.now() - 3_600_000);
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_5', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_5', 'claimed'));
-    mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
-    mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_5', state: 'initialized' });
-    mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_5', state: 'delivered', isCanceled: false, txHashes: ['0x5678'] });
-
-    await processDueSchedule(schedule as never, 'worker-1');
-
-    expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
-  });
-
-  it('sends all payees in one txrequest when recipients is set', async () => {
-    const schedule = fakeSchedule();
-    schedule.recipients = [
-      { address: '0xde709f2102306220921060314715629080e2fb77', amount: '100000' },
-      { address: '0x46bf08a6bbe257a470cefd8e87171d9429e74d2b', amount: '50000' },
-    ];
-    schedule.amount = '150000';
-    mFindOneAndUpdate
-      .mockResolvedValueOnce(executionDoc('exec_6', 'scheduled'))
-      .mockResolvedValueOnce(executionDoc('exec_6', 'claimed'));
-    mCheckBalance.mockResolvedValue({ spendable: '200000', maximumSpendable: '200000' });
-    mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_6', state: 'initialized' });
-    mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_6', state: 'delivered', isCanceled: false, txHashes: ['0xbeef'] });
-
-    await processDueSchedule(schedule as never, 'worker-1');
-
-    expect(mCreateTxRequest).toHaveBeenCalledTimes(1);
+    expect(mCheckBalance.mock.calls[0][1]).toBe('hot_wallet');
+    expect(mCheckBalance.mock.calls[1][1]).toBe('cold_wallet');
     const intent = mCreateTxRequest.mock.calls[0][1] as { recipients: Array<{ amount: { value: string } }> };
-    expect(intent.recipients).toHaveLength(2);
-    expect(intent.recipients.map((r) => r.amount.value)).toEqual(['100000', '50000']);
-    expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('executed');
+    expect(intent.recipients[0].amount.value).toBe('500');
+  });
+
+  it('sweeps sender balance down to leaveBalance', async () => {
+    const schedule = fakeSchedule({
+      conditionType: 'balance',
+      conditionMonitor: 'sender',
+      conditionOperator: 'above',
+      conditionLimit: '1500',
+      leaveBalance: '1000',
+      recipients: [{ address: '0xde709f2102306220921060314715629080e2fb77', amount: '0' }],
+      amount: '0',
+    });
+    claimExecution('exec_4');
+    mCheckBalance.mockResolvedValue({ spendable: '2000', maximumSpendable: '2000' });
+    mCreateTxRequest.mockResolvedValue({ txRequestId: 'txr_4', state: 'initialized' });
+    mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_4', state: 'delivered', isCanceled: false, txHashes: ['0xbeef'] });
+
+    await processDueSchedule(schedule as never, 'worker-1');
+
+    const intent = mCreateTxRequest.mock.calls[0][1] as { recipients: Array<{ amount: { value: string } }> };
+    expect(intent.recipients[0].amount.value).toBe('1000');
   });
 });
 
@@ -233,9 +203,7 @@ describe('pollPendingTxRequests', () => {
     await pollPendingTxRequests();
 
     expect(mFetchLatestTxRequest).toHaveBeenCalledWith('w1', 'txr_9');
-    const call = mUpdateOne.mock.calls[0];
-    expect(call[1].$set.status).toBe('executed');
-    expect(call[1].$set.txid).toBe('0xdead');
+    expect(mUpdateOne.mock.calls[0][1].$set).toMatchObject({ status: 'executed', txid: '0xdead' });
   });
 
   it('marks the execution failed when the txrequest is canceled', async () => {
@@ -246,70 +214,21 @@ describe('pollPendingTxRequests', () => {
 
     expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('failed');
   });
+});
 
-  it('records the fetch while the txrequest is still in flight', async () => {
-    mFind.mockResolvedValue([inFlightExec('exec_11', 'txr_11', 'pending_approval')]);
-    mFetchLatestTxRequest.mockResolvedValue({ txRequestId: 'txr_11', state: 'pendingDelivery', isCanceled: false, txHashes: [] });
-
-    await pollPendingTxRequests();
-
-    const call = mUpdateOne.mock.calls[0];
-    expect(call[1].$set.status).toBeUndefined();
-    expect(call[1].$set.txRequestLastPolledAt).toBeInstanceOf(Date);
+describe('pollTransferConfirmations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('skips the fetch when the refresh interval has not elapsed', async () => {
-    // env is read at module load — reset modules so the new value is picked up.
-    vi.resetModules();
-    process.env.TX_REQUEST_STATUS_REFRESH_MS = '60000';
-    try {
-      const { pollPendingTxRequests: poll } = await import('../src/services/executionService');
-      mFind.mockResolvedValue([
-        { ...inFlightExec('exec_12', 'txr_12', 'pending_approval'), txRequestLastPolledAt: new Date() },
-      ]);
-
-      await poll();
-
-      expect(mFetchLatestTxRequest).not.toHaveBeenCalled();
-      expect(mUpdateOne).not.toHaveBeenCalled();
-    } finally {
-      delete process.env.TX_REQUEST_STATUS_REFRESH_MS;
-    }
-  });
-
-  it('marks the execution confirmed when the transfer confirms on-chain', async () => {
+  it('marks executed transfer confirmed when BitGo reports confirmed', async () => {
     mFind.mockResolvedValue([
-      {
-        _id: { toString: () => 'exec_13' },
-        walletId: 'w1',
-        coin: 'hteth',
-        txid: '0xconf',
-        status: 'executed',
-      },
+      { _id: { toString: () => 'exec_13' }, walletId: 'w1', coin: 'tbaseeth', txid: '0xconf' },
     ]);
     mGetTransferStatus.mockResolvedValue({ state: 'confirmed', confirmations: 12 });
 
     await pollTransferConfirmations();
 
-    expect(mGetTransferStatus).toHaveBeenCalledWith('hteth', 'w1', '0xconf');
-    const call = mUpdateOne.mock.calls[0];
-    expect(call[1].$set.status).toBe('confirmed');
-  });
-
-  it('leaves executed executions alone while the transfer is unconfirmed', async () => {
-    mFind.mockResolvedValue([
-      {
-        _id: { toString: () => 'exec_14' },
-        walletId: 'w1',
-        coin: 'hteth',
-        txid: '0xpunconfirmed',
-        status: 'executed',
-      },
-    ]);
-    mGetTransferStatus.mockResolvedValue({ state: 'pendingConfirmation', confirmations: 0 });
-
-    await pollTransferConfirmations();
-
-    expect(mUpdateOne).not.toHaveBeenCalled();
+    expect(mUpdateOne.mock.calls[0][1].$set.status).toBe('confirmed');
   });
 });

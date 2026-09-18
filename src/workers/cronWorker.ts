@@ -13,10 +13,10 @@ const workerId = `${process.env.HOSTNAME ?? 'localhost'}:${process.pid}`;
 let shuttingDown = false;
 
 /**
- * Claim-based cron worker. Every `WORKER_POLL_INTERVAL_MS` (default 30 s) it:
- *  1. sends due upcoming-payment reminders (FR-14);
- *  2. scans due schedules and processes each occurrence via an atomic claim
- *     (FR-5) — exactly one worker executes each occurrence.
+ * Claim-based worker. Every `WORKER_POLL_INTERVAL_MS` (default 30 s) it:
+ *  1. sends due timestamp reminders;
+ *  2. monitors due smart-transaction rules and processes ready occurrences
+ *     via an atomic claim — exactly one worker executes each occurrence.
  *
  * No Temporal: scheduling is plain MongoDB atomic-claim polling, so any
  * number of replicas can run safely. Stuck claims are re-armed by the
@@ -28,7 +28,7 @@ async function tick(): Promise<void> {
   await pollTransferConfirmations().catch((err) => logger.error({ err }, 'transfer confirmation poll failed'));
   const now = new Date();
   const dueSchedules = await ScheduledTransaction.find({
-    kind: 'payment',
+    kind: 'smart-transaction',
     status: 'active',
     nextRunAt: { $lte: now },
     $or: [{ endAt: null }, { endAt: { $gte: now } }],
@@ -41,7 +41,7 @@ async function tick(): Promise<void> {
       await sendReminderIfDue(schedule);
       await processDueSchedule(schedule, workerId);
     } catch (err) {
-      logger.error({ err, scheduleId: schedule._id.toString() }, 'error processing due schedule');
+      logger.error({ err, smartTransactionId: schedule._id.toString() }, 'error processing smart transaction');
     }
   }
 }

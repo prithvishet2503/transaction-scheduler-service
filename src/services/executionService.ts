@@ -7,21 +7,18 @@ import { recipientsFromSchedule, sumAmounts } from '../utils/recipients';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import type { BalanceSnapshot, TxRequestView } from './bitgoClient';
-import type { DefaultReason, NotificationType } from '../types';
+import type { DefaultReason, NotificationType, Recipient } from '../types';
 
 /**
- * Core execution state machine for one schedule occurrence.
- *
- * Lifecycle: scheduled → claimed → { executed | defaulted | pending_approval
- * | failed } → confirmed (via transfer webhook). Retries re-arm the
- * occurrence back to `scheduled` with exponential backoff (FR-9).
+ * Core execution state machine for one smart transaction occurrence.
+ * Balance rules monitor until true; an unmet condition does not create an execution row.
  */
 
 function occurrenceSeq(scheduleId: string, scheduledFor: Date): string {
   return `${scheduleId}:${scheduledFor.getTime()}`;
 }
 
-/** Atomically create the occurrence row for a due schedule (unique per occurrence). */
+/** Atomically create the occurrence row for a due smart transaction. */
 export async function ensureExecution(scheduleId: string, scheduledFor: Date) {
   return ScheduleExecution.findOneAndUpdate(
     { scheduleId, scheduledFor },
@@ -52,17 +49,26 @@ export async function claimExecution(executionId: string, workerId: string) {
   );
 }
 
-/** Advance the schedule's nextRunAt after an occurrence resolves. */
 async function advanceSchedule(schedule: InstanceType<typeof ScheduledTransaction>) {
   if (schedule.status !== 'active') {
     return;
   }
-  const next = computeNextRun(schedule.frequency, schedule.nextRunAt ?? new Date(), schedule.timezone);
-  if (next === null) {
-    // one_time, or end date reached → completed
+  if (schedule.conditionType === 'balance') {
+    // Balance rules are standing monitors (top-up / rebalance): never complete.
+    // Every check re-arms the next check at the configured interval regardless
+    // of `repeat`, so a one-shot-looking schedule keeps watching the balance.
+    schedule.nextRunAt = new Date(Date.now() + env.balanceCheckIntervalMs);
+    await schedule.save();
+    return;
+  }
+  if (!schedule.repeat) {
     schedule.status = 'completed';
     schedule.nextRunAt = null;
-  } else if (schedule.endAt && next > schedule.endAt) {
+    await schedule.save();
+    return;
+  }
+  const next = computeNextRun(schedule.frequency, schedule.nextRunAt ?? new Date(), schedule.timezone);
+  if (next === null || (schedule.endAt && next > schedule.endAt)) {
     schedule.status = 'completed';
     schedule.nextRunAt = null;
   } else {
@@ -76,33 +82,34 @@ async function emit(
   schedule: InstanceType<typeof ScheduledTransaction>,
   extra: Partial<Parameters<typeof notify>[0]> = {},
 ) {
+  const recipients = recipientsFromSchedule(schedule);
   await notify({
     type,
     userId: schedule.userId,
     scheduleId: schedule._id.toString(),
     walletId: schedule.walletId,
     coin: schedule.coin,
-    destinationAddress: schedule.destinationAddress,
-    amount: schedule.amount,
-    recipients: recipientsFromSchedule(schedule),
-    scheduledFor: schedule.nextRunAt?.toISOString(),
+    destinationAddress: recipients[0].address,
+    amount: sumAmounts(recipients),
+    recipients: recipients.map((r) => ({ address: r.address, amount: r.amount ?? '0' })),
     consecutiveDefaultedCount: schedule.consecutiveDefaultedCount,
-    idempotencyKey: `${schedule._id.toString()}:${extra.executionId ?? 'none'}:${type}`,
+    idempotencyKey: `${schedule._id.toString()}:${type}:${Date.now()}`,
     ...extra,
   });
 }
 
 function retryBackoff(attempt: number): number {
-  const idx = Math.min(attempt - 1, env.retryBackoffMs.length - 1);
-  return env.retryBackoffMs[idx] ?? 60_000;
+  return env.retryBackoffMs[Math.min(attempt - 1, env.retryBackoffMs.length - 1)] ?? 60_000;
 }
 
 function delay(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type ExecutionPlan = {
+  recipients: Recipient[];
+  senderSnapshot?: BalanceSnapshot;
+};
 
 type OccurrenceOutcome =
   | { outcome: 'defaulted'; reason: DefaultReason; snapshot: BalanceSnapshot }
@@ -111,50 +118,118 @@ type OccurrenceOutcome =
   | { outcome: 'error'; snapshot: BalanceSnapshot; err: unknown };
 
 function balanceConditionMet(
-  operator: 'above' | 'below' | 'equals',
-  spendable: bigint,
-  limit: bigint,
+  operator: 'above' | 'below',
+  balance: bigint,
+  threshold: bigint,
 ): boolean {
-  if (operator === 'above') return spendable > limit;
-  if (operator === 'below') return spendable < limit;
-  return spendable === limit;
+  return operator === 'above' ? balance > threshold : balance < threshold;
 }
 
-/**
- * Balance pre-check + send (FR-10/FR-11). Two-layer rule:
- *  - spendableBalanceString < amount  → default (no transaction started)
- *  - server-side `insufficient_funds` → also default
- * A balance trigger condition is evaluated against the same snapshot; unmet →
- * default with BALANCE_CONDITION_NOT_MET (no transaction started).
- */
-async function executeOccurrence(
-  schedule: InstanceType<typeof ScheduledTransaction>,
-  executionId: string,
-): Promise<OccurrenceOutcome> {
-  const recipients = recipientsFromSchedule(schedule);
-  const totalAmount = sumAmounts(recipients);
-  const snapshot = await bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipients[0].address);
-  const spendable = BigInt(snapshot.spendable);
-  if (schedule.conditionType === 'balance' && schedule.conditionOperator && schedule.conditionLimit) {
-    if (!balanceConditionMet(schedule.conditionOperator, spendable, BigInt(schedule.conditionLimit))) {
-      return { outcome: 'defaulted', reason: 'BALANCE_CONDITION_NOT_MET', snapshot };
+async function monitoredBalance(schedule: InstanceType<typeof ScheduledTransaction>, recipient: Recipient): Promise<BalanceSnapshot> {
+  if (schedule.conditionMonitor === 'sender') {
+    return bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipient.address);
+  }
+  if (recipient.walletId) {
+    return bitgoClient.checkBalance(schedule.coin, recipient.walletId, recipient.address);
+  }
+  if (schedule.enterpriseId) {
+    const recipientBalance = await bitgoClient.getEnterpriseRecipientBalance(schedule.enterpriseId, schedule.coin);
+    return { spendable: recipientBalance.balance, maximumSpendable: null };
+  }
+  const resolvedWalletId = await bitgoClient.resolveWalletIdByAddress(schedule.coin, recipient.address);
+  if (!resolvedWalletId) {
+    throw new Error('recipient balance rules require a BitGo wallet address or enterpriseId');
+  }
+  return bitgoClient.checkBalance(schedule.coin, resolvedWalletId, recipient.address);
+}
+
+async function executionPlan(schedule: InstanceType<typeof ScheduledTransaction>): Promise<ExecutionPlan | null> {
+  const recipient = recipientsFromSchedule(schedule)[0];
+  if (schedule.conditionType === 'timestamp') {
+    if (schedule.conditionAt && new Date() < schedule.conditionAt) {
+      return null;
+    }
+    return { recipients: [recipient] };
+  }
+  if (schedule.conditionType !== 'balance' || !schedule.conditionOperator || !schedule.conditionLimit) {
+    return { recipients: [recipient] };
+  }
+  const snapshot = await monitoredBalance(schedule, recipient);
+  schedule.lastBalance = snapshot.spendable;
+  schedule.lastCheckAt = new Date();
+  await schedule.save();
+  const ready = balanceConditionMet(
+    schedule.conditionOperator,
+    BigInt(snapshot.spendable),
+    BigInt(schedule.conditionLimit),
+  );
+  if (!ready) {
+    logger.debug(
+      { smartTransactionId: schedule._id.toString(), balance: snapshot.spendable, threshold: schedule.conditionLimit },
+      'smart transaction rule not met',
+    );
+    // Re-arm the next check at the configured interval instead of re-checking
+    // on every worker poll.
+    schedule.nextRunAt = new Date(Date.now() + env.balanceCheckIntervalMs);
+    await schedule.save();
+    return null;
+  }
+  if (ready) {
+    // Condition met, but don't stack sends while a previous occurrence is
+    // still awaiting signature/broadcast - defer to the next check.
+    const inFlight = await ScheduleExecution.findOne({
+      scheduleId: schedule._id,
+      status: { $in: ['claimed', 'pending_approval'] },
+    })
+      .lean();
+    if (inFlight) {
+      logger.debug(
+        { smartTransactionId: schedule._id.toString(), executionId: String(inFlight._id) },
+        'balance rule met but an execution is still in flight; deferring',
+      );
+      schedule.nextRunAt = new Date(Date.now() + env.balanceCheckIntervalMs);
+      await schedule.save();
+      return null;
     }
   }
-  if (spendable < BigInt(totalAmount)) {
+  if (schedule.leaveBalance) {
+    const sendAmount = BigInt(snapshot.spendable) - BigInt(schedule.leaveBalance);
+    if (sendAmount <= 0n) {
+      // Nothing to sweep above the leave balance yet - re-arm and keep watching.
+      schedule.nextRunAt = new Date(Date.now() + env.balanceCheckIntervalMs);
+      await schedule.save();
+      return null;
+    }
+    return {
+      recipients: [{ address: recipient.address, walletId: recipient.walletId, amount: sendAmount.toString() }],
+      senderSnapshot: snapshot,
+    };
+  }
+  return { recipients: [recipient], senderSnapshot: schedule.conditionMonitor === 'sender' ? snapshot : undefined };
+}
+
+async function executeOccurrence(
+  schedule: InstanceType<typeof ScheduledTransaction>,
+  recipients: Recipient[],
+  senderSnapshot?: BalanceSnapshot,
+): Promise<OccurrenceOutcome> {
+  const snapshot = senderSnapshot ?? await bitgoClient.checkBalance(schedule.coin, schedule.walletId, recipients[0].address);
+  const totalAmount = sumAmounts(recipients);
+  const spendable = BigInt(snapshot.spendable);
+  const maximumSpendable = snapshot.maximumSpendable ? BigInt(snapshot.maximumSpendable) : spendable;
+  if (spendable < BigInt(totalAmount) || maximumSpendable < BigInt(totalAmount)) {
     return { outcome: 'defaulted', reason: 'INSUFFICIENT_BALANCE', snapshot };
   }
-  const intentRecipients = recipients.map((r) => {
+  const intentRecipients = recipients.map((recipient) => {
     const entry: Record<string, unknown> = {
-      address: { address: r.address },
-      amount: { value: r.amount, symbol: schedule.tokenName ?? schedule.coin },
+      address: { address: recipient.address },
+      amount: { value: recipient.amount, symbol: schedule.tokenName ?? schedule.coin },
     };
     if (schedule.tokenName) {
-      // Token schedules are EVM ERC-20-like in this service; Wallet Platform
-      // rejects a transferToken recipient without tokenData.
       entry.tokenData = {
         tokenName: schedule.tokenName,
         tokenType: 'ERC20',
-        tokenQuantity: r.amount,
+        tokenQuantity: recipient.amount,
       };
     }
     return entry;
@@ -163,12 +238,10 @@ async function executeOccurrence(
     intentType: schedule.tokenName ? 'transferToken' : 'payment',
     recipients: intentRecipients,
     sequenceId: `${schedule._id.toString()}:${schedule.nextRunAt?.getTime() ?? Date.now()}`,
-    comment: `scheduled:${schedule._id.toString()}`,
+    comment: `smart-transaction:${schedule._id.toString()}`,
   };
   try {
     const created = await bitgoClient.createTxRequest(schedule.walletId, intent);
-    // Bounded inline poll after creating: hot wallets usually sign + broadcast
-    // within seconds, so the document can move past 'pending_approval' here.
     let view = await bitgoClient.fetchLatestTxRequest(schedule.walletId, created.txRequestId);
     for (
       let i = 0;
@@ -191,7 +264,6 @@ async function executeOccurrence(
       return { outcome: 'defaulted', reason: 'INSUFFICIENT_BALANCE', snapshot };
     }
     if (status === 401 || status === 403) {
-      // Ops alert path — token is paused-safe: leave the occurrence claimed.
       logger.error({ err }, 'bitgo access token invalid — executions pause-safe');
       return { outcome: 'token_error', snapshot, err };
     }
@@ -199,7 +271,7 @@ async function executeOccurrence(
   }
 }
 
-/** Claim + run one occurrence for a due schedule. */
+/** Claim + run one occurrence for a due smart transaction. */
 export async function processDueSchedule(
   schedule: InstanceType<typeof ScheduledTransaction>,
   workerId: string,
@@ -208,25 +280,52 @@ export async function processDueSchedule(
   if (!scheduledFor) {
     return;
   }
-  // Timestamp trigger condition: the occurrence cannot fire before `at`;
-  // leave unclaimed and pick it up on a later tick.
-  if (schedule.conditionType === 'timestamp' && schedule.conditionAt && new Date() < schedule.conditionAt) {
+  const plan = await executionPlan(schedule);
+  if (!plan) {
     return;
   }
   const execution = await ensureExecution(schedule._id.toString(), scheduledFor);
   if (!execution) {
     return;
   }
+  // Promised timeline + buffer (timestamp rules only): once the scheduled time
+  // plus the buffer window has passed, the occurrence is never attempted or
+  // retried again - retries (attempt backoff) and reaper re-arms both funnel
+  // through here, so the user is never surprised by a late send.
+  if (
+    schedule.conditionType === 'timestamp' &&
+    Date.now() > scheduledFor.getTime() + env.occurrenceDeadlineMs
+  ) {
+    const window = Math.round(env.occurrenceDeadlineMs / 60_000);
+    await ScheduleExecution.updateOne(
+      { _id: execution._id, status: { $in: ['scheduled', 'claimed'] } },
+      {
+        $set: {
+          status: 'failed',
+          error: `missed execution window: scheduled ${scheduledFor.toISOString()} + ${window} min buffer exceeded`,
+        },
+      },
+    );
+    schedule.lastRunAt = scheduledFor;
+    await advanceSchedule(schedule);
+    await emit('execution_failed', schedule, {
+      executionId: execution._id.toString(),
+      scheduledFor: scheduledFor.toISOString(),
+    });
+    logger.warn(
+      { smartTransactionId: schedule._id.toString(), executionId: execution._id.toString(), scheduledFor: scheduledFor.toISOString() },
+      'timestamp occurrence expired past promised window; not retrying',
+    );
+    return;
+  }
   const claimed = await claimExecution(execution._id.toString(), workerId);
   if (!claimed) {
-    // Someone else claimed it this tick — nothing to do.
     return;
   }
 
-  const run = await executeOccurrence(schedule, claimed._id.toString());
+  const run = await executeOccurrence(schedule, plan.recipients, plan.senderSnapshot);
 
   if (run.outcome === 'defaulted') {
-    // FR-10/11: no transaction started; schedule stays active, next occurrence proceeds.
     await ScheduleExecution.updateOne(
       { _id: claimed._id },
       { $set: { status: 'defaulted', reason: run.reason, balanceSnapshot: run.snapshot } },
@@ -241,14 +340,13 @@ export async function processDueSchedule(
       nextRunAt: schedule.nextRunAt?.toISOString(),
     });
     logger.warn(
-      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), reason: run.reason },
-      'occurrence defaulted',
+      { smartTransactionId: schedule._id.toString(), executionId: claimed._id.toString(), reason: run.reason },
+      'smart transaction defaulted',
     );
     return;
   }
 
   if (run.outcome === 'token_error') {
-    // Leave claimed + pause-safe; ops will rotate the token.
     return;
   }
 
@@ -256,7 +354,6 @@ export async function processDueSchedule(
     const attempt = (claimed.attempt ?? 0) + 1;
     const err = run.err as Error;
     if (attempt < env.workerMaxAttempts) {
-      // Retry with backoff: re-arm the occurrence (FR-9).
       await ScheduleExecution.updateOne(
         { _id: claimed._id },
         {
@@ -268,7 +365,7 @@ export async function processDueSchedule(
           },
         },
       );
-      logger.warn({ scheduleId: schedule._id.toString(), attempt, err: err?.message }, 'send failed, will retry');
+      logger.warn({ smartTransactionId: schedule._id.toString(), attempt, err: err?.message }, 'send failed, will retry');
     } else {
       await ScheduleExecution.updateOne(
         { _id: claimed._id },
@@ -278,12 +375,11 @@ export async function processDueSchedule(
         executionId: claimed._id.toString(),
         scheduledFor: scheduledFor.toISOString(),
       });
-      logger.error({ scheduleId: schedule._id.toString(), attempt, err: err?.message }, 'occurrence failed');
+      logger.error({ smartTransactionId: schedule._id.toString(), attempt, err: err?.message }, 'smart transaction failed');
     }
     return;
   }
 
-  // outcome === 'sent'
   const { txRequestId, view } = run;
   if (view.isCanceled) {
     await ScheduleExecution.updateOne(
@@ -291,7 +387,7 @@ export async function processDueSchedule(
       { $set: { status: 'failed', txRequestId, error: 'txrequest canceled', balanceSnapshot: run.snapshot } },
     );
     logger.warn(
-      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId },
+      { smartTransactionId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId },
       'txrequest canceled',
     );
     return;
@@ -299,7 +395,6 @@ export async function processDueSchedule(
 
   const txid = view.txHashes[0];
   if (txid) {
-    // Broadcast submitted; settlement is async — 'confirmed' arrives via webhook (FR-8).
     await ScheduleExecution.updateOne(
       { _id: claimed._id },
       { $set: { status: 'executed', txid, txRequestId, coin: schedule.coin, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
@@ -308,14 +403,12 @@ export async function processDueSchedule(
     schedule.lastRunAt = scheduledFor;
     await advanceSchedule(schedule);
     logger.info(
-      { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, txid },
-      'occurrence executed (awaiting confirmation)',
+      { smartTransactionId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, txid },
+      'smart transaction executed (awaiting confirmation)',
     );
     return;
   }
 
-  // Txrequest created + accepted; signing/approval still in flight (FR-7).
-  // The tick-driven poller (pollPendingTxRequests) advances the document later.
   await ScheduleExecution.updateOne(
     { _id: claimed._id },
     { $set: { status: 'pending_approval', txRequestId, coin: schedule.coin, walletId: schedule.walletId, balanceSnapshot: run.snapshot } },
@@ -323,18 +416,12 @@ export async function processDueSchedule(
   schedule.lastRunAt = scheduledFor;
   await advanceSchedule(schedule);
   logger.info(
-    { scheduleId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, state: view.state },
-    'occurrence txrequest awaiting signing/approval',
+    { smartTransactionId: schedule._id.toString(), executionId: claimed._id.toString(), txRequestId, state: view.state },
+    'smart transaction txrequest awaiting signing/approval',
   );
 }
 
-/**
- * Polling worker: each tick advances in-flight executions.
- * 1. pending_approval + txRequestId → re-fetch the txrequest: canceled →
- *    failed, txHash seen → executed (+txid).
- * 2. executed + txid → check the on-chain transfer state; once BitGo reports
- *    it confirmed, the execution becomes 'confirmed' (no webhook needed).
- */
+/** Poll txrequests created on earlier ticks until they broadcast or fail. */
 export async function pollPendingTxRequests(): Promise<void> {
   const inFlight = await ScheduleExecution.find({
     txRequestId: { $exists: true, $ne: null },
@@ -351,7 +438,7 @@ export async function pollPendingTxRequests(): Promise<void> {
       exec.txRequestLastPolledAt &&
       now.getTime() - exec.txRequestLastPolledAt.getTime() < refreshMs
     ) {
-      continue; // fetched recently — next tick will pick it up
+      continue;
     }
     let view: TxRequestView | null;
     try {
@@ -380,7 +467,6 @@ export async function pollPendingTxRequests(): Promise<void> {
       logger.info({ executionId: exec._id.toString(), txRequestId: exec.txRequestId, txid }, 'txrequest broadcast');
       continue;
     }
-    // Still in flight or already executed — record the poll either way.
     await ScheduleExecution.updateOne(
       { _id: exec._id },
       { $set: { txRequestLastPolledAt: now } },
@@ -388,12 +474,7 @@ export async function pollPendingTxRequests(): Promise<void> {
   }
 }
 
-/**
- * Poll on-chain confirmation for broadcast executions: an 'executed'
- * execution whose transfer reaches state 'confirmed' becomes 'confirmed'
- * (same outcome the transfer webhook produces, FR-8 — this covers demos
- * without a webhook configured).
- */
+/** Poll on-chain confirmation for broadcast executions. */
 export async function pollTransferConfirmations(): Promise<void> {
   const executed = await ScheduleExecution.find({
     status: 'executed',
@@ -424,13 +505,9 @@ export async function pollTransferConfirmations(): Promise<void> {
   }
 }
 
-/** Send the upcoming-payment reminder for a schedule, exactly once per occurrence (FR-14). */
+/** Send the upcoming-payment reminder once per timestamp occurrence. */
 export async function sendReminderIfDue(schedule: InstanceType<typeof ScheduledTransaction>) {
-  if (schedule.status !== 'active' || !schedule.nextRunAt) {
-    return;
-  }
-  // Timestamp trigger condition: no reminder before the trigger time.
-  if (schedule.conditionType === 'timestamp' && schedule.conditionAt && new Date() < schedule.conditionAt) {
+  if (schedule.status !== 'active' || !schedule.nextRunAt || schedule.conditionType === 'balance') {
     return;
   }
   const dueAt = new Date(schedule.nextRunAt.getTime() - schedule.reminderOffsetMs);
@@ -446,5 +523,5 @@ export async function sendReminderIfDue(schedule: InstanceType<typeof ScheduledT
     scheduledFor: schedule.nextRunAt.toISOString(),
     idempotencyKey: `${schedule._id.toString()}:${schedule.nextRunAt.getTime()}:reminder`,
   });
-  logger.info({ scheduleId: schedule._id.toString() }, 'upcoming reminder sent');
+  logger.info({ smartTransactionId: schedule._id.toString() }, 'upcoming reminder sent');
 }

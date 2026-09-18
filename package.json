@@ -1,7 +1,7 @@
 {
   "name": "transaction-scheduler-service",
   "version": "1.0.0",
-  "description": "Standalone BitGo transaction scheduler microservice — recurring scheduled payments executed through the normal BitGo pipeline.",
+  "description": "Standalone BitGo smart transaction microservice — timestamp sends, sender sweeps, and recipient top-ups through the normal BitGo pipeline.",
   "license": "Apache-2.0",
   "private": true,
   "type": "commonjs",

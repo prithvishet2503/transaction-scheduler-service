@@ -5,8 +5,8 @@ import { logger } from '../utils/logger';
 /**
  * Demo auth: static API key (hardcoded for the hackathon; no KMS).
  * The caller supplies `x-api-key`. Optionally `x-user-id` selects the
- * owning user (defaults to a fixed demo user) — production would resolve
- * the user from an OAuth scoped session instead (see EXTERNAL-INTEGRATIONS.md).
+ * owning user (defaults to a fixed demo user). Production would resolve
+ * the user from an OAuth scoped session instead.
  */
 export function requireApiKey(req: Request, res: Response, next: NextFunction) {
   const key = req.header('x-api-key');
